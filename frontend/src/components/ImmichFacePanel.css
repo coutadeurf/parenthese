@@ -1,0 +1,81 @@
+/* Association d'un visage Immich : sélecteur de personne avec aperçu du portrait. La fenêtre vient de pz.css */
+.immich-modal-overlay { z-index: 2200; }
+.immich-modal-card { max-width: 520px; }
+
+.immich-body { display: grid; gap: 16px; }
+
+.immich-current {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--pz-a300);
+  border-radius: var(--pz-r-m);
+  background: var(--pz-a50);
+  font: 500 13px var(--pz-sans);
+  color: var(--pz-ink-2);
+}
+
+.immich-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--pz-line);
+  border-radius: var(--pz-r-m);
+  background: var(--pz-surface);
+  color: var(--pz-faint);
+}
+.immich-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font: 500 13.5px var(--pz-sans);
+  color: var(--pz-ink);
+  outline: none;
+}
+
+.immich-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--pz-line);
+  border-radius: var(--pz-r-m);
+  padding: 6px;
+}
+.immich-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--pz-r-m) - 3px);
+  background: var(--pz-surface);
+  color: var(--pz-ink-2);
+  font: 500 13px var(--pz-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.immich-person.is-active { border-color: var(--pz-a500); background: var(--pz-a50); color: var(--pz-a700); }
+@media (hover: hover) and (pointer: fine) { .immich-person:hover:not(.is-active) { background: var(--pz-a50); } }
+
+.immich-preview {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--pz-line);
+  border-radius: var(--pz-r-m);
+}
+.immich-preview img { width: 96px; height: 96px; object-fit: cover; border-radius: 50%; }
+.immich-preview-empty { width: 96px; height: 96px; display: grid; place-items: center; border-radius: 50%; background: var(--pz-surface); color: var(--pz-faint); }
+.immich-preview-name { font: 500 13px var(--pz-sans); color: var(--pz-faint); }
+
+.immich-empty { font: 500 13px var(--pz-sans); color: var(--pz-faint); text-align: center; padding: 12px 0; }
+.immich-error { margin: 0; }
+.immich-spin { animation: immich-rotate 900ms linear infinite; }
+@keyframes immich-rotate { to { transform: rotate(360deg); } }

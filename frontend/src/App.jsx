@@ -1535,6 +1535,11 @@ function App() {
     }
   }, [auth.userAuth.token, tree.treeContext.accessToken, tree.treeContext.treeId, refreshTreeAndKeepSelection])
 
+  // Visage venu d'Immich : recharger l'arbre pour montrer le nouveau portrait (ou le portrait restant)
+  const handleImmichChange = useCallback(async (personId) => {
+    await refreshTreeAndKeepSelection(personId, { relayout: false, avatarCacheBust: Date.now() })
+  }, [refreshTreeAndKeepSelection])
+
   const handlePersonAvatarDelete = useCallback(async (personId) => {
     const accessToken = tree.treeContext.accessToken || auth.userAuth.token
     if (!accessToken || !tree.treeContext.treeId) return
@@ -2847,6 +2852,9 @@ function App() {
           onManageMedia={media.handleOpenMediaManager}
           onAvatarUpload={tree.canEditCurrentTree ? handlePersonAvatarUpload : undefined}
           onAvatarDelete={tree.canEditCurrentTree ? handlePersonAvatarDelete : undefined}
+          treeId={tree.treeContext.treeId || null}
+          immichToken={tree.treeContext.accessToken || auth.userAuth.token}
+          onImmichChange={tree.canEditCurrentTree ? handleImmichChange : undefined}
           avatarActionLoading={avatarActionState.loading}
           avatarActionError={avatarActionState.error}
           isAdmin={userRole.isAdmin}

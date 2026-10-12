@@ -208,6 +208,8 @@ model Person {
   notes      String?
   createdBy  String?
   updatedBy  String?
+  // Personne Immich associée (reconnaissance des visages) : identifiant côté Immich, ou null.
+  immichPersonId String?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   deletedAt  DateTime?

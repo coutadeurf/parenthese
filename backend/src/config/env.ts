@@ -50,6 +50,10 @@ const envSchema = z.object({
   // Place disque par arbre, et part réservée aux envois de la famille en attente de relecture
   MEDIA_QUOTA_PER_TREE_MB: z.coerce.number().int().positive().default(5120),
   MEDIA_PENDING_QUOTA_PER_TREE_MB: z.coerce.number().int().positive().default(500),
+  // Reconnaissance des visages via Immich : désactivé par défaut, adresse et clé de l'instance.
+  IMMICH_ENABLED: z.preprocess((val) => String(val).toLowerCase() === 'true', z.boolean()).default(false),
+  IMMICH_API_URL: z.string().url().optional(),
+  IMMICH_API_KEY: z.string().min(1).optional(),
 })
 
 export const env = envSchema.parse(process.env)

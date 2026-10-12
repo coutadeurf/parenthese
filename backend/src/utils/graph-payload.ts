@@ -17,6 +17,7 @@ export type GraphPayload = {
     avatarUrlPath: string | null
     sex: string | null
     notes: string | null
+    immichPersonId: string | null
   }>
   unions: Array<{
     id: string
@@ -90,6 +91,7 @@ export function buildGraphPayload(
         avatarUrlPath: person.avatarPath ? `/trees/${treeId}/persons/${person.id}/avatar` : null,
         sex: person.sex,
         notes: person.notes,
+        immichPersonId: person.immichPersonId,
       })),
     unions: unions.map((union) => ({
         id: union.id,

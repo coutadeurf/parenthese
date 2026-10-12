@@ -1,7 +1,8 @@
 ﻿import { useState, useEffect, useRef, forwardRef } from 'react'
-import { Save, Trash2, Plus, X, Search, Check, Play, ImagePlus } from 'lucide-react'
+import { Save, Trash2, Plus, X, Search, Check, Play, ImagePlus, Sparkles } from 'lucide-react'
 import { getParents, getChildren, getPersonUnions, getPersonMedias, filiations, persons, unions } from '../data/mockData'
 import GeoMediaThumbnail from './GeoMediaThumbnail'
+import ImmichFacePanel from './ImmichFacePanel.jsx'
 import './PersonCard.css'
 import PzBusy from './PzBusy.jsx'
 import { t, dateLocale } from '../i18n/index.js'
@@ -35,6 +36,9 @@ const PersonCard = ({
   onManageMedia,
   onAvatarUpload,
   onAvatarDelete,
+  treeId = null,
+  immichToken = null,
+  onImmichChange,
   avatarActionLoading = false,
   avatarActionError = '',
   isAdmin = false,
@@ -55,6 +59,7 @@ const PersonCard = ({
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showImmichPanel, setShowImmichPanel] = useState(false)
 
   // Inline relation search state
   const [activeRelationSearch, setActiveRelationSearch] = useState(null) // 'parent' | 'spouse' | 'child' | null
@@ -369,6 +374,11 @@ const PersonCard = ({
               {person.photo && (
                 <button type="button" className="pc-photo-btn pc-photo-btn--danger" onClick={() => onAvatarDelete?.(person.id)} disabled={avatarActionLoading}>
                   {t('Retirer')}
+                </button>
+              )}
+              {treeId && onImmichChange && (
+                <button type="button" className="pc-photo-btn" onClick={() => setShowImmichPanel(true)} disabled={avatarActionLoading}>
+                  <Sparkles size={14} aria-hidden="true" /> {person.immichPersonId ? t('Visage Immich') : t('Depuis Immich')}
                 </button>
               )}
             </div>
@@ -689,6 +699,17 @@ const PersonCard = ({
             </>
           )}
         </footer>
+      )}
+
+      {/* ── Association d'un visage Immich (modale) ── */}
+      {showImmichPanel && treeId && (
+        <ImmichFacePanel
+          person={person}
+          treeId={treeId}
+          token={immichToken}
+          onClose={() => setShowImmichPanel(false)}
+          onImmichChange={onImmichChange}
+        />
       )}
     </div>
   )

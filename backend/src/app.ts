@@ -10,6 +10,7 @@ import { isUserTokenRevoked } from './lib/token-revocation.js'
 import { authRoutes } from './routes/auth.js'
 import { contributionRoutes } from './routes/contributions.js'
 import { graphRoutes } from './routes/graph.js'
+import { immichRoutes } from './routes/immich.js'
 import { mediaRoutes } from './routes/media.js'
 import { publicRoutes } from './routes/public.js'
 import { annotationRoutes } from './routes/annotations.js'
@@ -147,6 +148,7 @@ export function createApp() {
   app.register(annotationRoutes)
   app.register(gedcomRoutes)
   app.register(visitRoutes)
+  app.register(immichRoutes)
 
   app.setErrorHandler((error: FastifyError | Error, request, reply) => {
     if (error instanceof Prisma.PrismaClientInitializationError) {

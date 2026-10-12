@@ -92,7 +92,8 @@ function hasAdminRight(role: MembershipRole): boolean {
   return role === 'owner' || role === 'admin'
 }
 
-function getStorageRoot(): string {
+// Racine du stockage des médias : partagée avec les portraits venus d'Immich (routes/immich.ts).
+export function getStorageRoot(): string {
   return path.resolve(env.MEDIA_STORAGE_PATH)
 }
 
@@ -116,7 +117,7 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 
 // Fichier décodé, reconnu à ses octets et nettoyé (photos sans métadonnées, vidéos sans position).
 // Le type déclaré par le navigateur n'est plus qu'un indice pour les conteneurs ambigus.
-async function prepareUploadedFile(
+export async function prepareUploadedFile(
   buffer: Buffer,
   type: BinaryMediaType,
   fileName: string,
@@ -167,7 +168,7 @@ async function treeDiskUsage(treeId: string): Promise<number> {
 }
 
 // Place disque d'un arbre : total, et part des envois en attente de relecture (limite l'envoi en boucle)
-async function exceedsStorageQuota(app: FastifyRequest['server'], treeId: string, incomingBytes: number, isPending: boolean): Promise<boolean> {
+export async function exceedsStorageQuota(app: FastifyRequest['server'], treeId: string, incomingBytes: number, isPending: boolean): Promise<boolean> {
   const MB = 1024 * 1024
   if ((await treeDiskUsage(treeId)) + incomingBytes > env.MEDIA_QUOTA_PER_TREE_MB * MB) {
     return true
@@ -190,7 +191,7 @@ const UPLOAD_RATE_LIMIT = { bodyLimit: UPLOAD_BODY_LIMIT, config: { rateLimit: {
 // retrouvées après un import GEDCOM), envoyées une par une. Le quota de stockage de l'arbre s'applique.
 const AVATAR_RATE_LIMIT = { bodyLimit: UPLOAD_BODY_LIMIT, config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }
 
-async function requireAdminMembership(app: FastifyRequest['server'], userId: string, treeId: string) {
+export async function requireAdminMembership(app: FastifyRequest['server'], userId: string, treeId: string) {
   const membership = await app.prisma.treeMembership.findUnique({
     where: {
       treeId_userId: {
