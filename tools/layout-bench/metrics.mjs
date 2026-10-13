@@ -104,6 +104,8 @@ export function computeMetrics(result, coupleBarMeta, tMs) {
     t_ms: Math.round(tMs * 10) / 10,
     nodes: nodes.length,
     edges: result.edges.length,
+    renvois: result.edges.filter(e => e._renvoi).length,
+    couloirs: result.edges.filter(e => e._corridor).length,
     overlaps,
     crossings,
     couples_split: couplesSplit,

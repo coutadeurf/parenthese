@@ -143,6 +143,90 @@ export function normalizeFiliationsForLayout(filiations = [], unions = []) {
 }
 
 // ============================================================
+// Génations ancrées sur une personne racine (layout « rooted »)
+//
+// gen(racine) = 0 : les ancêtres montent en générations négatives,
+// les descendants descendent, les frères et sœurs restent au niveau
+// de la racine, comme dans l'arbre graphique de Geneanet.
+//
+// Propagation par file de travail, en trois règles monotones
+// (une génération assignée ne redescend jamais) :
+//   - conjoint : aligné sur le plus profond des deux partenaires ;
+//   - enfant   : toujours sous ses parents (≥ max des parents + 1) ;
+//   - parents  : s'ils ne sont pas encore placés, une génération
+//                AU-DESSUS de leur enfant. Les ancêtres de la racine
+//                sont ainsi réclamés en premier (distance BFS 1).
+// Un graphe mal formé (cycle de filiations) ne boucle pas
+// indéfiniment : le nombre de traitements est plafonné.
+// ============================================================
+function computeRootedGenerations(persons, unions, normalizedFiliations, rootPersonId) {
+  const gen = new Map()
+  const queue = []
+  let processed = 0
+  const budget = persons.length * 30 + 256
+
+  const unionsById = new Map(unions.map(u => [u.id, u]))
+  const unionPartners = (u) => {
+    const partners = []
+    if (u.partner1Id) partners.push(u.partner1Id)
+    if (u.partner2Id) partners.push(u.partner2Id)
+    return partners
+  }
+  const unionsOf = new Map()
+  unions.forEach(u => {
+    for (const pid of unionPartners(u)) {
+      if (!unionsOf.has(pid)) unionsOf.set(pid, [])
+      unionsOf.get(pid).push(u)
+    }
+  })
+  const filiationsByChild = new Map()
+  const filiationsAsParent = new Map()
+  normalizedFiliations.forEach(f => {
+    if (!filiationsByChild.has(f.childId)) filiationsByChild.set(f.childId, [])
+    filiationsByChild.get(f.childId).push(f)
+    const parentIds = f.unionId
+      ? unionPartners(unionsById.get(f.unionId) || {})
+      : f.parentId ? [f.parentId] : []
+    for (const pid of parentIds) {
+      if (!filiationsAsParent.has(pid)) filiationsAsParent.set(pid, [])
+      filiationsAsParent.get(pid).push(f)
+    }
+  })
+
+  const assign = (pid, g) => {
+    if (pid == null) return
+    const cur = gen.get(pid)
+    if (cur !== undefined && cur >= g) return
+    gen.set(pid, g)
+    queue.push(pid)
+  }
+
+  gen.set(rootPersonId, 0)
+  queue.push(rootPersonId)
+  while (queue.length > 0 && processed < budget) {
+    const pid = queue.shift()
+    processed += 1
+    const g = gen.get(pid)
+    for (const u of (unionsOf.get(pid) || [])) {
+      assign(u.partner1Id === pid ? u.partner2Id : u.partner1Id, g)
+    }
+    for (const f of (filiationsAsParent.get(pid) || [])) {
+      assign(f.childId, g + 1)
+    }
+    for (const f of (filiationsByChild.get(pid) || [])) {
+      if (f.unionId) {
+        for (const partnerId of unionPartners(unionsById.get(f.unionId) || {})) {
+          if (!gen.has(partnerId)) assign(partnerId, g - 1)
+        }
+      } else if (f.parentId && !gen.has(f.parentId)) {
+        assign(f.parentId, g - 1)
+      }
+    }
+  }
+  return gen
+}
+
+// ============================================================
 // Layout complet
 //
 // Algorithme Sugiyama adapté aux couples :
@@ -168,7 +252,7 @@ const LARGE_FAMILY_GAP = 80
 const LARGE_FAMILY_THRESHOLD = 3
 const CLUSTER_SPREAD_FACTOR = 6
 
-export function computeLayout(graphData = null) {
+export function computeLayout(graphData = null, options = {}) {
   const persons = graphData?.persons || globalPersons
   const unions = graphData?.unions || globalUnions
   const filiations = graphData?.filiations || globalFiliations
@@ -223,9 +307,21 @@ export function computeLayout(graphData = null) {
     genMap.set(u.partner2Id, maxG)
   })
 
-  // Ajuster les racines orphelines : si un ancêtre sans parents connus
-  // a des enfants à gen N, il doit être à gen N-1 (pas gen 0).
-  {
+  // Mode « rooted » : générations relatives à une personne racine (voir computeRootedGenerations).
+  // Les personnes non atteintes depuis la racine (composantes déconnectées) gardent la génération
+  // minimale calculée ci-dessus, puis tout est décalé pour partir de 0.
+  if (options.rootPersonId != null) {
+    const rootedGen = computeRootedGenerations(persons, unions, normalizedFiliations, options.rootPersonId)
+    rootedGen.forEach((g, pid) => genMap.set(pid, g))
+    let minGen = Infinity
+    genMap.forEach(g => { if (g < minGen) minGen = g })
+    if (Number.isFinite(minGen) && minGen !== 0) {
+      genMap.forEach((g, pid) => genMap.set(pid, g - minGen))
+    }
+    persons.forEach(p => { if (!genMap.has(p.id)) genMap.set(p.id, 0) })
+  } else {
+    // Ajuster les racines orphelines : si un ancêtre sans parents connus
+    // a des enfants à gen N, il doit être à gen N-1 (pas gen 0).
     const rootIds = new Set(persons.filter(p => !filiationsByChild.has(p.id)).map(p => p.id))
     const maxChildGenByRoot = new Map()
     normalizedFiliations.forEach(f => {

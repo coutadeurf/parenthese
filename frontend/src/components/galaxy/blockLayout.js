@@ -1,4 +1,4 @@
-import { computeLayout, componentOrderPerGen, chainGap } from './elkLayout'
+import { computeLayout, componentOrderPerGen, chainGap, coupleBarMeta } from './elkLayout'
 import { RENVOI_MIN_DX } from './constants'
 
 // ============================================================
@@ -21,16 +21,79 @@ import { RENVOI_MIN_DX } from './constants'
 //   (beaux-parents) est ancré : centré sur cet enfant, puis décalé au
 //   créneau libre le plus proche.
 //
+//   Mode « rooted » (options.rootPersonId, voir rootedLayout.js) :
+//   générations relatives à la racine (elkLayout) et lignées ordonnées
+//   par proximité avec elle : la chaîne d'un couple partagé est placée
+//   sous la lignée la plus proche de la racine, les lignées alliées
+//   sont rangées côte à côte, et une arête inter-lignées qui ne saute
+//   qu'une génération est dessinée en connecteur orthogonal dans le
+//   couloir entre deux rangées au lieu d'un renvoi.
+//
 // Benchmark et variantes écartées : tools/layout-bench/.
 // ============================================================
 
 const NODE_SPACING = 30
 const FAMILY_GAP = 60
 
-export function computeBlockLayout(graphData = null) {
-  const result = computeLayout(graphData)
+// Distance de parenté (nombre de sauts personne-personne) depuis la racine :
+// conjoints et liens parent-enfant. Sert à ordonner les lignées : la lignée
+// de la racine d'abord, puis les branches collatérales et les familles
+// alliées par distance croissante. Une chaîne atteignable seulement depuis
+// une autre composante (déconnectée) reste à l'infini.
+function kinshipDistances(rootPersonId, edges) {
+  const dist = new Map()
+  if (rootPersonId == null) return dist
+  const partnersOf = new Map()
+  const familyOf = new Map()
+  for (const { elkId, p1Key, p2Key } of coupleBarMeta) {
+    familyOf.set(elkId, [p1Key, p2Key])
+    if (!partnersOf.has(p1Key)) partnersOf.set(p1Key, [])
+    partnersOf.get(p1Key).push(p2Key)
+    if (!partnersOf.has(p2Key)) partnersOf.set(p2Key, [])
+    partnersOf.get(p2Key).push(p1Key)
+  }
+  const adj = new Map()
+  const link = (a, b) => {
+    if (!adj.has(a)) adj.set(a, [])
+    adj.get(a).push(b)
+  }
+  for (const [p, others] of partnersOf) for (const o of others) link(p, o)
+  for (const e of edges) {
+    for (const p of (familyOf.get(e.sources[0]) || [])) {
+      link(p, e.targets[0])
+      link(e.targets[0], p)
+    }
+  }
+
+  const rootKey = `p-${rootPersonId}`
+  dist.set(rootKey, 0)
+  const queue = [rootKey]
+  while (queue.length > 0) {
+    const cur = queue.shift()
+    for (const next of (adj.get(cur) || [])) {
+      if (dist.has(next)) continue
+      dist.set(next, dist.get(cur) + 1)
+      queue.push(next)
+    }
+  }
+  return dist
+}
+
+export function computeBlockLayout(graphData = null, options = {}) {
+  const layoutOptions = options.rootPersonId != null ? { rootPersonId: options.rootPersonId } : {}
+  const result = computeLayout(graphData, layoutOptions)
   const nodes = result.children
   const byId = new Map(nodes.map(n => [n.id, n]))
+
+  // Ordre des lignées en mode « rooted » : proximité avec la racine
+  const distOf = kinshipDistances(options.rootPersonId ?? null, result.edges)
+  const chainDist = (chain) => chain.reduce((m, id) => {
+    if (!id.startsWith('p-')) return m
+    const d = distOf.get(id)
+    return d === undefined ? m : Math.min(m, d)
+  }, Infinity)
+  // Comparateur : les chaînes hors de la composante de la racine passent après toutes les autres
+  const distRank = (chain) => { const d = chainDist(chain); return Number.isFinite(d) ? d : 1e9 }
 
   // Chaînes de couples (composantes d'une génération) telles que computeLayout les a ordonnées
   const chainOf = new Map()
@@ -140,7 +203,7 @@ export function computeBlockLayout(graphData = null) {
       return null
     }
     return {
-      rows, members, external, gen, rel,
+      rows, members, external, gen, rel, chain,
       get width() { return Math.max(...[...rows.values()].map(v => v[1])) },
       place(x0) {
         for (const id of chain) pos.set(id, x0 + rowX + offsets.get(id))
@@ -149,8 +212,13 @@ export function computeBlockLayout(graphData = null) {
     }
   }
 
-  // 1) Racines : chaînes sans parents, grandes lignées d'abord
-  const roots = chains.filter(c => !hasParents(c)).sort((a, b) => countDesc(b) - countDesc(a) || genOf(a) - genOf(b))
+  // 1) Racines : chaînes sans parents. Par défaut les grandes lignées d'abord ; en mode
+  // « rooted », la lignée de la racine d'abord puis par distance de parenté croissante
+  // (l'ordre de construction décide quelle lignée place une chaîne partagée : la plus
+  // proche de la racine gagne).
+  const roots = chains.filter(c => !hasParents(c)).sort((a, b) => (
+    distRank(a) - distRank(b) || countDesc(b) - countDesc(a) || genOf(a) - genOf(b)
+  ))
   const free = [], anchored = []
   for (const r of roots) {
     if (placed.has(r)) continue
@@ -159,11 +227,49 @@ export function computeBlockLayout(graphData = null) {
     if (ownExternal) anchored.push(block)
     else free.push(block)
   }
+  // Mode « rooted » : ranger les blocs libres pour placer côte à côte les lignées alliées
+  // (une arête externe entre deux blocs est d'autant plus courte qu'ils sont voisins).
+  // Parcours glouton : on part de la lignée de la racine, puis chaque bloc lié par un
+  // mariage à un bloc déjà rangé vient juste après ; à égalité, le plus proche de la
+  // racine d'abord. Les blocs sans lien suivent, par distance croissante.
+  if (options.rootPersonId != null && free.length > 1) {
+    const ownerOf = new Map()
+    free.forEach((b, i) => { for (const m of b.members) ownerOf.set(m, i) })
+    const links = new Map()
+    free.forEach((b, i) => {
+      for (const { kid, unionId } of b.external) {
+        if (ownerOf.get(unionId) !== i) continue
+        const j = ownerOf.get(kid)
+        if (j === undefined || j === i) continue
+        if (!links.has(i)) links.set(i, new Set())
+        links.get(i).add(j)
+      }
+    })
+    const ordered = []
+    const taken = new Set()
+    while (ordered.length < free.length) {
+      let pick = -1, pickLinked = false
+      for (let i = 0; i < free.length; i++) {
+        if (taken.has(i)) continue
+        const linked = [...(links.get(i) || [])].some(j => taken.has(j))
+        if (pick === -1 || (linked && !pickLinked)
+          || (linked === pickLinked && distRank(free[i].chain) < distRank(free[pick].chain))) {
+          pick = i; pickLinked = linked
+        }
+      }
+      taken.add(pick)
+      ordered.push(free[pick])
+    }
+    ordered.forEach((b, i) => { free[i] = b })
+  }
   const forest = packBlocks(free, FAMILY_GAP * 2)
   free.forEach((b, i) => b.place(forest.xs[i]))
   let cursor = Math.max(0, ...[...forest.rows.values()].map(v => v[1])) + FAMILY_GAP * 2
 
-  // 2) Blocs ancrés : l'union concernée centrée sur son enfant déjà placé, générations profondes d'abord
+  // 2) Blocs ancrés : l'union concernée centrée sur son enfant déjà placé, générations
+  // profondes d'abord, puis par proximité avec la racine. En mode « rooted », le créneau
+  // se contente d'un écart de nœud (plus fin) et, à défaut de créneau, le bloc se place
+  // là où il gêne le moins au lieu d'être rejeté loin à droite.
   const occupied = (exclude) => {
     const byGen = new Map()
     for (const n of nodes) {
@@ -173,7 +279,7 @@ export function computeBlockLayout(graphData = null) {
     }
     return byGen
   }
-  anchored.sort((a, b) => b.gen - a.gen)
+  anchored.sort((a, b) => b.gen - a.gen || distRank(a.chain) - distRank(b.chain))
   for (const block of anchored) {
     const occ = occupied(block.members)
     const targets = block.external
@@ -181,22 +287,48 @@ export function computeBlockLayout(graphData = null) {
       .map(({ kid, unionId }) => pos.get(kid) + byId.get(kid).width / 2 - (block.rel(unionId) + byId.get(unionId).width / 2))
     if (!targets.length) { block.place(cursor); cursor += block.width + FAMILY_GAP * 2; continue }
     const ideal = targets.reduce((s, v) => s + v, 0) / targets.length
+    const anchoredMargin = options.rootPersonId != null ? NODE_SPACING : FAMILY_GAP
+    // Positions relatives des membres : le test de créneau ne replace pas tout le bloc
+    // à chaque pas de recherche (place() coûte un parcours du sous-arbre).
+    const membersRel = [...block.members].map(id => ({
+      rx: block.rel(id), w: byId.get(id).width, gen: byId.get(id)._generation,
+    }))
     const fits = (x0) => {
-      block.place(x0)
-      for (const id of block.members) {
-        const n = byId.get(id); const x = pos.get(id)
-        for (const [s, e] of (occ.get(n._generation) || [])) {
-          if (x < e + FAMILY_GAP && x + n.width > s - FAMILY_GAP) return false
+      for (const m of membersRel) {
+        const x = x0 + m.rx
+        for (const [s, e] of (occ.get(m.gen) || [])) {
+          if (x < e + anchoredMargin && x + m.w > s - anchoredMargin) return false
         }
       }
       return true
     }
     let found = false
+    let foundX = 0
     for (let d = 0; d < 40000 && !found; d += 20) {
-      if (fits(ideal + d)) found = true
-      else if (d > 0 && fits(ideal - d)) found = true
+      if (fits(ideal + d)) { found = true; foundX = ideal + d }
+      else if (d > 0 && fits(ideal - d)) { found = true; foundX = ideal - d }
     }
-    if (!found) { block.place(cursor); cursor += block.width + FAMILY_GAP * 2 }
+    if (!found) {
+      if (options.rootPersonId == null) {
+        block.place(cursor); cursor += block.width + FAMILY_GAP * 2
+        continue
+      }
+      let bestX = null, bestOverlap = Infinity
+      for (let d = 0; d <= 40000 && bestOverlap > 0; d += 60) {
+        for (const x0 of d === 0 ? [ideal] : [ideal + d, ideal - d]) {
+          let overlap = 0
+          for (const m of membersRel) {
+            const x = x0 + m.rx
+            for (const [s, e] of (occ.get(m.gen) || [])) {
+              if (x < e && x + m.w > s) overlap += Math.min(e, x + m.w) - Math.max(s, x)
+            }
+          }
+          if (overlap < bestOverlap) { bestOverlap = overlap; bestX = x0 }
+        }
+      }
+      foundX = bestX ?? cursor
+    }
+    block.place(foundX)
   }
 
   // Réinjecter le X, normalisé à 0 ; Y inchangé (générations)
@@ -204,13 +336,22 @@ export function computeBlockLayout(graphData = null) {
   for (const n of nodes) if (pos.has(n.id)) minX = Math.min(minX, pos.get(n.id))
   for (const n of nodes) if (pos.has(n.id)) n.x = pos.get(n.id) - minX
 
-  // Arête longue vers un enfant placé sous l'autre lignée : dessinée en renvoi (voir drawFiliations)
+  // Arête longue vers un enfant placé sous l'autre lignée. Par défaut : renvoi cliquable
+  // (voir drawFiliations). En mode « rooted », une arête qui ne saute qu'une génération
+  // est dessinée en connecteur orthogonal dans le couloir vide entre deux rangées —
+  // la relation reste un vrai trait lisible, le renvoi reste le repli des sauts
+  // multiples (un couloir traverserait une rangée de portraits).
   // Plusieurs renvois sous la même union : pastilles empilées (_renvoiIndex)
   const centerX = (id) => byId.get(id).x + byId.get(id).width / 2
   const renvoisByUnion = new Map()
   for (const e of result.edges) {
     const u = e.sources[0], c = e.targets[0]
     if (!externalEdges.has(`${u}>${c}`) || Math.abs(centerX(u) - centerX(c)) <= RENVOI_MIN_DX) continue
+    if (options.rootPersonId != null
+      && byId.get(c)._generation - byId.get(u)._generation === 1) {
+      e._corridor = true
+      continue
+    }
     e._renvoi = true
     e._renvoiIndex = renvoisByUnion.get(u) || 0
     renvoisByUnion.set(u, e._renvoiIndex + 1)

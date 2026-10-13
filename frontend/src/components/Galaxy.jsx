@@ -4,15 +4,22 @@ import { PERSON_R, FLOAT_SPEED, FLOAT_AMPLITUDE, REPULSION_RADIUS, REPULSION_STR
 import { easeOutCubic } from './galaxy/utils'
 import { computeLayout, generateNodeRandomData, coupleBarMeta } from './galaxy/elkLayout'
 import { computeBlockLayout } from './galaxy/blockLayout'
-
-// Placement par blocs familiaux par défaut (mesures : tools/layout-bench). ?layout=sugiyama = placement Sugiyama.
-const USE_BLOCK_LAYOUT = typeof window === 'undefined' || new URLSearchParams(window.location.search).get('layout') !== 'sugiyama'
+import { computeRootedLayout } from './galaxy/rootedLayout'
 import { findPathBFS } from './galaxy/pathfinding'
 import { drawBackground, drawCoupleLinks, drawFiliations, drawAnnotations, drawPathHighlight, drawNodes, drawRenvoiPills } from './galaxy/renderers'
 import { annotations as annotationData } from '../data/mockData'
 import { useImageCache } from './galaxy/useImageCache'
 import { useGalaxyInteractions } from './galaxy/useGalaxyInteractions'
 import './Galaxy.css'
+
+// Placement par blocs familiaux par défaut (mesures : tools/layout-bench). ?layout=sugiyama = placement
+// Sugiyama. ?layout=rooted&root=<id> = blocs familiaux organisés autour d'une personne racine.
+const SEARCH_PARAMS = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search)
+const LAYOUT_PARAM = SEARCH_PARAMS?.get('layout')
+const ROOTED_LAYOUT = LAYOUT_PARAM === 'rooted'
+const USE_BLOCK_LAYOUT = LAYOUT_PARAM !== 'sugiyama'
+const ROOT_PARAM = SEARCH_PARAMS?.get('root')
+
 
 // Assez bas pour cadrer un grand arbre entier à l'ouverture
 // (le rendu à petite échelle reste bon marché grâce au niveau de détail selon le zoom)
@@ -200,7 +207,14 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
 
   // Layout
   useEffect(() => {
-    const result = USE_BLOCK_LAYOUT ? computeBlockLayout() : computeLayout()
+    // « rooted » : la racine vient de ?root=<id>, sinon de la personne de départ
+    // de l'arbre, sinon d'un repli déterministe (voir rootedLayout.resolveRootPersonId)
+    let result
+    if (ROOTED_LAYOUT) {
+      result = computeRootedLayout(null, ROOT_PARAM ?? focusPersonIdRef.current)
+    } else {
+      result = USE_BLOCK_LAYOUT ? computeBlockLayout() : computeLayout()
+    }
 
     const canvas = canvasRef.current
     if (!canvas) return

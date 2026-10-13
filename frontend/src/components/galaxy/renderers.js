@@ -287,6 +287,25 @@ export function drawFiliations(ctx, edges, posMap, nodeMap, nodeRandomData, entr
     ctx.globalAlpha = Math.min(1, edgeProgress * 1.5)
 
     const childR = nodeRadius(targetNode)
+    if (edge._corridor) {
+      // Filiation inter-lignées du layout « rooted » : connecteur orthogonal dans le
+      // couloir vide entre deux rangées (jamais au-dessus des portraits)
+      const sourceNode = nodeMap.get(sourceId)
+      if (sourceNode) {
+        const sy = sourcePos.cy + sourceNode.height / 2
+        const ty = targetPos.cy - targetNode.height / 2
+        const busY = (sy + ty) / 2
+        ctx.beginPath()
+        ctx.moveTo(sourcePos.cx, sy)
+        ctx.lineTo(sourcePos.cx, busY)
+        ctx.lineTo(targetPos.cx, busY)
+        ctx.lineTo(targetPos.cx, targetPos.cy - childR)
+        ctx.stroke()
+      }
+      ctx.globalAlpha = 1
+      ctx.setLineDash([])
+      return
+    }
     if (edge._renvoi) {
       drawRenvoi(ctx, edge, sourcePos, targetPos, targetNode, childR, view)
       ctx.globalAlpha = 1

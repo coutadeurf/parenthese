@@ -23,6 +23,18 @@ export function renderSvg(result, coupleBarMeta, file, title = '') {
     const sx = s.x + s.width / 2, sy = s.y + s.height / 2
     const tx = t.x + t.width / 2, ty = t.y + t.height / 2 - 30
     const dy = ty - sy, dx = tx - sx
+    // Renvoi : pastilles dans l'app, pointillé ici — pas de trait continu
+    if (e._renvoi) {
+      out.push(`<line x1="${sx}" y1="${sy}" x2="${sx}" y2="${sy + 40}" fill="none" stroke="#5D524B" stroke-opacity="0.25" stroke-width="1.2" stroke-dasharray="3,4"/>`)
+      out.push(`<line x1="${tx}" y1="${ty - 40}" x2="${tx}" y2="${ty}" fill="none" stroke="#5D524B" stroke-opacity="0.25" stroke-width="1.2" stroke-dasharray="3,4"/>`)
+      continue
+    }
+    // Couloir (layout « rooted ») : connecteur orthogonal entre les deux rangées
+    if (e._corridor) {
+      const busY = (s.y + s.height + t.y) / 2
+      out.push(`<path d="M${sx},${s.y + s.height} L${sx},${busY} L${tx},${busY} L${tx},${t.y}" fill="none" stroke="#5D524B" stroke-opacity="0.45" stroke-width="1.2"/>`)
+      continue
+    }
     out.push(`<path d="M${sx},${sy} C${sx + dx * 0.3},${sy + dy * 0.5} ${tx - dx * 0.3},${ty - dy * 0.5} ${tx},${ty}" fill="none" stroke="#5D524B" stroke-opacity="0.45" stroke-width="1.2"/>`)
   }
   // Couples
