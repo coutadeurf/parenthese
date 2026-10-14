@@ -494,6 +494,7 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
       select: {
         id: true,
         avatarPath: true,
+        immichPersonId: true,
       },
     })
 
@@ -554,6 +555,10 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
         avatarPath: relativePath,
         avatarMimeType: prepared.mimeType,
         updatedBy: request.actor.userId,
+        // Un portrait déposé à la main remplace aussi le lien Immich : sans cela, l'association
+        // survivrait invisible en base (le graphe ne publie que l'origine du portrait) et ne
+        // pourrait plus être retirée depuis l'interface.
+        ...(person.immichPersonId ? { immichPersonId: null } : {}),
       },
     })
 
@@ -568,6 +573,7 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
         action: 'person_avatar_updated',
         entityType: 'person',
         entityId: params.data.personId,
+        ...(person.immichPersonId ? { payloadJson: { immichLinkRemoved: true } } : {}),
       },
     })
 

@@ -45,6 +45,7 @@ import {
   updatePerson,
   uploadAnnotationPhoto,
 } from './api/treeApi'
+import { getImmichErrorMessage, unassignImmichPerson } from './api/immichApi.js'
 import { useAuth } from './hooks/useAuth'
 import { useTreeAccess, getTreeTokenStorageKey, getSlugFromPathname, readTreeAccessRole, TREE_ID_FROM_ENV } from './hooks/useTreeAccess'
 import { useMediaManager } from './hooks/useMediaManager'
@@ -1540,18 +1541,28 @@ function App() {
     await refreshTreeAndKeepSelection(personId, { relayout: false, avatarCacheBust: Date.now() })
   }, [refreshTreeAndKeepSelection])
 
-  const handlePersonAvatarDelete = useCallback(async (personId) => {
+  const handlePersonAvatarDelete = useCallback(async (personId, avatarFromImmich = false) => {
     const accessToken = tree.treeContext.accessToken || auth.userAuth.token
     if (!accessToken || !tree.treeContext.treeId) return
 
     setAvatarActionState({ loading: true, error: '' })
 
     try {
-      await deletePersonAvatar(tree.treeContext.treeId, personId, accessToken)
-      await refreshTreeAndKeepSelection(personId, { relayout: true })
+      // Portrait venu d'Immich : le désassignement retire le portrait et l'association d'un
+      // coup ; la suppression seule laisserait une association pendante en base.
+      if (avatarFromImmich) {
+        await unassignImmichPerson(tree.treeContext.treeId, personId, accessToken)
+        await refreshTreeAndKeepSelection(personId, { relayout: false, avatarCacheBust: Date.now() })
+      } else {
+        await deletePersonAvatar(tree.treeContext.treeId, personId, accessToken)
+        await refreshTreeAndKeepSelection(personId, { relayout: true })
+      }
       setAvatarActionState({ loading: false, error: '' })
     } catch (error) {
-      setAvatarActionState({ loading: false, error: getAccountErrorMessage(error) })
+      setAvatarActionState({
+        loading: false,
+        error: avatarFromImmich ? getImmichErrorMessage(error, t) : getAccountErrorMessage(error),
+      })
     }
   }, [auth.userAuth.token, tree.treeContext.accessToken, tree.treeContext.treeId, refreshTreeAndKeepSelection])
 

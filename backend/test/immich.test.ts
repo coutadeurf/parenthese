@@ -15,8 +15,12 @@ const { prismaMock } = vi.hoisted(() => ({
     person: {
       findFirst: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     treeMembership: {
+      findUnique: vi.fn(),
+    },
+    treeImmichConfig: {
       findUnique: vi.fn(),
     },
     mediaItem: {
@@ -37,6 +41,7 @@ vi.mock('../src/lib/prisma.js', () => ({
 let createApp: () => FastifyInstance
 let storageRoot: string
 let jpegBytes: Buffer
+let treeApiKeyEnc = ''
 const immichPersonId = '123e4567-e89b-42d3-a456-426614174000'
 const otherImmichId = '123e4567-e89b-42d3-a456-426614174111'
 
@@ -97,9 +102,13 @@ beforeAll(async () => {
   process.env.JWT_EXPIRES_IN = '7d'
   process.env.JWT_TREE_ACCESS_EXPIRES_IN = '24h'
   process.env.CORS_ORIGIN = 'http://localhost:5173'
+  // Plus de variables d'environnement Immich : la connexion de l'arbre vit en base,
+  // un arbre sans ligne n'a jamais accès à l'instance d'un autre.
   process.env.IMMICH_ENABLED = 'true'
-  process.env.IMMICH_API_URL = 'http://immich.test'
-  process.env.IMMICH_API_KEY = 'test-key'
+  process.env.IMMICH_API_URL = 'http://env-immich.example.org'
+  process.env.IMMICH_API_KEY = 'env-key'
+  // L'instance de l'arbre fait partie de la liste autorisée par l'opérateur.
+  process.env.IMMICH_ALLOWED_API_URLS = 'http://immich.test'
 
   storageRoot = await mkdtemp(path.join(os.tmpdir(), 'parenthese-immich-'))
   process.env.MEDIA_STORAGE_PATH = storageRoot
@@ -107,6 +116,11 @@ beforeAll(async () => {
   process.env.MEDIA_QUOTA_PER_TREE_MB = '1'
 
   jpegBytes = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#aabbcc' } }).jpeg().toBuffer()
+
+  // Clé chiffrée avec le secret effectif de l'application : import dynamique pour que
+  // la configuration d'environnement ci-dessus soit déjà en place.
+  const secret = await import('../src/lib/immich-secret.js')
+  treeApiKeyEnc = secret.encryptImmichApiKey('test-key')
 
   const module = await import('../src/app.js')
   createApp = module.createApp
@@ -139,8 +153,12 @@ beforeEach(async () => {
     tree: { deletedAt: null },
   })
 
+  // Connexion Immich de l'arbre : résolue en base, clé chiffrée comme en production.
+  prismaMock.treeImmichConfig.findUnique.mockResolvedValue({ apiUrl: 'http://immich.test', apiKeyEnc: treeApiKeyEnc })
+
   prismaMock.person.findFirst.mockResolvedValue(null)
   prismaMock.person.update.mockResolvedValue({ id: 'person-1' })
+  prismaMock.person.updateMany.mockResolvedValue({ count: 1 })
   prismaMock.auditLog.create.mockResolvedValue({ id: 'audit-1' })
   prismaMock.mediaItem.aggregate.mockResolvedValue({ _sum: { sizeBytes: 0 } })
 
@@ -149,6 +167,34 @@ beforeEach(async () => {
 })
 
 describe('Immich integration: status and people', () => {
+  it('talks to the tree\'s own Immich instance, never to the server environment', async () => {
+    const app = createApp()
+    const token = await createUserToken(app)
+    fetchMock.mockResolvedValue(await jsonResponse({ res: 'pong' }))
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/trees/tree-1/immich/status',
+      headers: { authorization: `Bearer ${token}` },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ available: true, reason: null })
+
+    // La connexion vient de la base (http://immich.test), pas des variables d'environnement
+    // (http://env-immich.example.org), et la clé passe par l'en-tête, jamais dans l'URL.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toBe('http://immich.test/api/server/ping')
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({ 'x-api-key': 'test-key' })
+
+    // La clé est lue depuis l'arbre demandé, pas depuis un autre.
+    expect(prismaMock.treeImmichConfig.findUnique).toHaveBeenCalledWith({
+      where: { treeId: 'tree-1' },
+      select: { apiUrl: true, apiKeyEnc: true },
+    })
+    await app.close()
+  })
+
   it('reports Immich available when ping answers pong', async () => {
     const app = createApp()
     const token = await createUserToken(app)
@@ -313,7 +359,8 @@ describe('Immich integration: assign', () => {
     const app = createApp()
     const token = await createUserToken(app)
 
-    // Portrait manuel en place : il doit être supprimé une fois la base à jour.
+    // Portrait manuel en place : l'administrateur a confirmé son remplacement, il doit
+    // être supprimé une fois la base à jour.
     const oldAvatarRelative = 'tree-1/person-1/avatar-old.jpg'
     await mkdir(path.dirname(await absStoragePath(oldAvatarRelative)), { recursive: true })
     await writeFile(await absStoragePath(oldAvatarRelative), 'old avatar')
@@ -325,7 +372,7 @@ describe('Immich integration: assign', () => {
       method: 'POST',
       url: '/trees/tree-1/immich/assign',
       headers: { authorization: `Bearer ${token}` },
-      payload: { personId: 'person-1', immichPersonId },
+      payload: { personId: 'person-1', immichPersonId, replaceAvatar: true },
     })
 
     expect(response.statusCode).toBe(200)
@@ -355,10 +402,62 @@ describe('Immich integration: assign', () => {
     await app.close()
   })
 
+  it('asks before replacing an existing portrait, whatever its origin', async () => {
+    const app = createApp()
+    const token = await createUserToken(app)
+    mockImmichPerson()
+
+    // Portrait manuel en place : l'association ne le remplace pas sans accord explicite.
+    const manualAvatarRelative = 'tree-1/person-confirm/avatar-manuel.jpg'
+    await mkdir(path.dirname(await absStoragePath(manualAvatarRelative)), { recursive: true })
+    await writeFile(await absStoragePath(manualAvatarRelative), 'portrait manuel')
+
+    prismaMock.person.findFirst.mockResolvedValue({ id: 'person-confirm', avatarPath: manualAvatarRelative })
+
+    const manual = await app.inject({
+      method: 'POST',
+      url: '/trees/tree-1/immich/assign',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { personId: 'person-confirm', immichPersonId },
+    })
+
+    expect(manual.statusCode).toBe(409)
+    expect(manual.json()).toEqual({ error: 'avatar_exists' })
+
+    // Même garde pour un portrait venu d'une association Immich précédente.
+    prismaMock.person.findFirst.mockResolvedValue({
+      id: 'person-confirm',
+      avatarPath: `tree-1/person-confirm/immich-${randomUUID()}.jpg`,
+      immichPersonId: otherImmichId,
+    })
+
+    const fromImmich = await app.inject({
+      method: 'POST',
+      url: '/trees/tree-1/immich/assign',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { personId: 'person-confirm', immichPersonId },
+    })
+
+    expect(fromImmich.statusCode).toBe(409)
+    expect(fromImmich.json()).toEqual({ error: 'avatar_exists' })
+
+    // Base, journal d'audit et fichiers : rien n'a bougé.
+    expect(prismaMock.person.update).not.toHaveBeenCalled()
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled()
+    expect(prismaMock.$transaction).not.toHaveBeenCalled()
+    await expect(fsExists(await absStoragePath(manualAvatarRelative))).resolves.toBe(true)
+
+    const files = await fsListDir(path.join(storageRoot, 'tree-1', 'person-confirm'))
+    expect(files.filter((name) => name.startsWith('immich-'))).toEqual([])
+    await app.close()
+  })
+
   it('assigns without touching the avatar when Immich has no thumbnail', async () => {
     const app = createApp()
     const token = await createUserToken(app)
 
+    // Portrait manuel conservé : sans vignette Immich, l'association ne le remplace pas,
+    // aucune confirmation n'est donc nécessaire.
     prismaMock.person.findFirst.mockResolvedValue({ id: 'person-1', avatarPath: 'tree-1/person-1/avatar-keep.jpg' })
     mockImmichPerson({ thumbnailPath: '' })
 
@@ -557,7 +656,7 @@ describe('Immich integration: assign', () => {
       method: 'POST',
       url: '/trees/tree-1/immich/assign',
       headers: { authorization: `Bearer ${token}` },
-      payload: { personId: 'person-tx', immichPersonId },
+      payload: { personId: 'person-tx', immichPersonId, replaceAvatar: true },
     })
 
     expect(response.statusCode).toBe(500)
@@ -640,6 +739,26 @@ describe('Immich integration: unassign', () => {
     await app.close()
   })
 
+  it('does nothing when no association is in place', async () => {
+    const app = createApp()
+    const token = await createUserToken(app)
+
+    prismaMock.person.findFirst.mockResolvedValue({ id: 'person-1', avatarPath: null, immichPersonId: null })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/trees/tree-1/immich/unassign',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { personId: 'person-1' },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ ok: true, avatarRemoved: false })
+    expect(prismaMock.person.update).not.toHaveBeenCalled()
+    expect(prismaMock.auditLog.create).not.toHaveBeenCalled()
+    await app.close()
+  })
+
   it('rejects unknown persons and non-admin members', async () => {
     const app = createApp()
     const token = await createUserToken(app)
@@ -667,6 +786,69 @@ describe('Immich integration: unassign', () => {
       payload: { personId: 'person-1' },
     })
     expect(member.statusCode).toBe(403)
+    await app.close()
+  })
+})
+
+describe('Immich integration: manual avatar replacing an Immich portrait', () => {
+  it('clears the association when a manual file overwrites the Immich portrait', async () => {
+    const app = createApp()
+    const token = await createUserToken(app)
+
+    const oldAvatarRelative = `tree-1/person-1/immich-${randomUUID()}.jpg`
+    await writeFile(await absStoragePath(oldAvatarRelative), jpegBytes)
+    prismaMock.person.findFirst.mockResolvedValue({ id: 'person-1', avatarPath: oldAvatarRelative, immichPersonId })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/trees/tree-1/persons/person-1/avatar',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        fileName: 'portrait.jpg',
+        mimeType: 'image/jpeg',
+        sizeBytes: jpegBytes.length,
+        dataBase64: jpegBytes.toString('base64'),
+      },
+    })
+
+    expect(response.statusCode).toBe(201)
+    expect(response.json()).toEqual({ ok: true })
+
+    // Le portrait manuel remplace le fichier Immich et son association : sinon l'association
+    // survivrait invisible en base, sans qu'aucune interface ne puisse la retirer.
+    const updateData = prismaMock.person.updateMany.mock.calls[0][0].data
+    expect(updateData.immichPersonId).toBe(null)
+    expect(updateData.avatarPath).toEqual(expect.any(String))
+    expect(updateData.avatarPath).not.toContain('immich-')
+
+    // Le retrait du lien apparaît dans le journal d'audit de l'envoi.
+    const auditData = prismaMock.auditLog.create.mock.calls[0][0].data
+    expect(auditData.action).toBe('person_avatar_updated')
+    expect(auditData.payloadJson).toEqual({ immichLinkRemoved: true })
+    await app.close()
+  })
+
+  it('does not touch the association field when there is none', async () => {
+    const app = createApp()
+    const token = await createUserToken(app)
+
+    prismaMock.person.findFirst.mockResolvedValue({ id: 'person-1', avatarPath: null, immichPersonId: null })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/trees/tree-1/persons/person-1/avatar',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        fileName: 'portrait.jpg',
+        mimeType: 'image/jpeg',
+        sizeBytes: jpegBytes.length,
+        dataBase64: jpegBytes.toString('base64'),
+      },
+    })
+
+    expect(response.statusCode).toBe(201)
+    const updateData = prismaMock.person.updateMany.mock.calls[0][0].data
+    expect(updateData).not.toHaveProperty('immichPersonId')
     await app.close()
   })
 })

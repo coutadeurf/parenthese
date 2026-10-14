@@ -55,6 +55,9 @@
 .pc-photo--add:focus-visible { outline: 2px solid var(--pz-a500); outline-offset: 3px; }
 .pc-photo--add:disabled { opacity: .6; cursor: default; }
 .pc-photo-actions { display: grid; gap: 4px; justify-items: center; }
+/* Menu du choix de source du portrait : au-dessus de la fiche (z-index 1000), sous la modale Immich (2200) */
+.pc-source-backdrop { position: fixed; inset: 0; z-index: 1100; }
+.pc-source-menu { position: fixed; z-index: 1150; min-width: 220px; }
 .pc-photo-btn {
   border: 0; background: none; padding: 2px 4px; cursor: pointer;
   font: 500 12px var(--pz-sans); color: var(--pz-a700); text-decoration: underline; text-underline-offset: 2px;

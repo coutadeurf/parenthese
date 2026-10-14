@@ -5,26 +5,34 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { z } from 'zod'
 
 import {
-  getImmichClient,
-  isImmichConfigured,
+  getImmichAllowedApiUrls,
+  getTreeImmichClient,
+  isImmichApiUrlAllowed,
   isImmichPersonId,
+  normalizeImmichApiUrl,
   ImmichAuthError,
   ImmichNotFoundError,
   ImmichUnavailableError,
   type ImmichPersonSummary,
 } from '../lib/immich.js'
-import { InvalidMediaError, removeStoredFile, sniffMimeType } from '../lib/media-files.js'
+import { encryptImmichApiKey } from '../lib/immich-secret.js'
+import { InvalidMediaError, isImmichAvatarPath, removeStoredFile, sniffMimeType } from '../lib/media-files.js'
 import { exceedsStorageQuota, getStorageRoot, prepareUploadedFile, requireAdminMembership } from './media.js'
 
 // Reconnaissance des visages : associer une personne de l'arbre à une personne Immich, dont la
-// vignette devient son portrait. Toutes les routes sont rattachées à un arbre et réservées à
-// ses administrateurs : la liste des visages d'Immich ne se montre pas au premier compte venu.
+// vignette devient son portrait. Chaque arbre porte sa propre connexion Immich : une adresse
+// choisie parmi celles autorisées par l'opérateur du serveur (IMMICH_ALLOWED_API_URLS), et une
+// clé chiffrée en base. Toutes les routes sont rattachées à un arbre, réservées à ses
+// administrateurs, et ne parlent jamais à l'instance d'un autre arbre.
 
 const treeParamSchema = z.object({ id: z.string().min(1) })
 
 const assignSchema = z.object({
   personId: z.string().min(1),
   immichPersonId: z.string().refine(isImmichPersonId, 'invalid_immich_person_id'),
+  // Remplacer un portrait déjà en place demande un accord explicite, quelle que soit son
+  // origine (posé à la main ou venu d'une association Immich précédente).
+  replaceAvatar: z.boolean().optional(),
 })
 
 const unassignSchema = z.object({
@@ -34,6 +42,17 @@ const unassignSchema = z.object({
 const thumbnailParamSchema = z.object({
   id: z.string().min(1),
   immichPersonId: z.string().refine(isImmichPersonId, 'invalid_immich_person_id'),
+})
+
+// Connexion Immich d'un arbre : adresse choisie parmi celles autorisées par l'opérateur du
+// serveur (IMMICH_ALLOWED_API_URLS). La clé se joint à la mise à jour ou, si le champ reste
+// vide, celle en place est conservée — jamais relue par le front.
+const configPayloadSchema = z.object({
+  apiUrl: z
+    .string()
+    .url()
+    .refine((value) => value.startsWith('http://') || value.startsWith('https://'), 'invalid_api_url'),
+  apiKey: z.string().min(1).max(512).optional(),
 })
 
 const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024
@@ -52,8 +71,13 @@ function replyImmichError(request: FastifyRequest, reply: FastifyReply, error: u
   return reply.code(500).send({ error: 'immich_api_error' })
 }
 
-function requireConfiguredClient() {
-  return getImmichClient()
+// Métadonnées sûres d'une connexion Immich d'arbre : jamais la clé, jamais son chiffré. Une
+// adresse sortie de la liste de l'opérateur vaut « non configuré » : la connexion est inerte.
+function immichConfigSummary(config: { apiUrl: string; updatedAt: Date } | null) {
+  if (!config || !isImmichApiUrlAllowed(config.apiUrl)) {
+    return { configured: false, apiUrl: null, updatedAt: null }
+  }
+  return { configured: true, apiUrl: config.apiUrl, updatedAt: config.updatedAt }
 }
 
 // Portraits venus d'Immich : même nommage que les envois manuels (« avatar-<uuid> »), avec le
@@ -64,6 +88,139 @@ function buildAvatarRelativePath(treeId: string, personId: string, extension: st
 }
 
 export const immichRoutes: FastifyPluginAsync = async (app) => {
+  // ── Connexion Immich de l'arbre : lecture, écriture, suppression. Réservées aux
+  // administrateurs de l'arbre ; la clé d'API ne quitte jamais le serveur.
+
+  app.get('/trees/:id/immich/config', async (request, reply) => {
+    if (!request.actor || request.actor.kind !== 'user') {
+      return reply.code(401).send({ error: 'authentication_required' })
+    }
+
+    const params = treeParamSchema.safeParse(request.params)
+    if (!params.success) {
+      return reply.code(400).send({ error: 'invalid_params' })
+    }
+
+    if (!(await requireAdminMembership(app, request.actor.userId, params.data.id))) {
+      return reply.code(403).send({ error: 'forbidden' })
+    }
+
+    const config = await app.prisma.treeImmichConfig.findUnique({
+      where: { treeId: params.data.id },
+      select: { apiUrl: true, updatedAt: true },
+    })
+
+    return reply.send({
+      config: immichConfigSummary(config),
+      // Les administrateurs choisissent parmi cette liste : le front en fait un menu, pas un champ libre.
+      allowedApiUrls: getImmichAllowedApiUrls(),
+    })
+  })
+
+  app.put('/trees/:id/immich/config', async (request, reply) => {
+    if (!request.actor || request.actor.kind !== 'user') {
+      return reply.code(401).send({ error: 'authentication_required' })
+    }
+
+    const params = treeParamSchema.safeParse(request.params)
+    const payload = configPayloadSchema.safeParse(request.body)
+    if (!params.success) {
+      return reply.code(400).send({ error: 'invalid_params' })
+    }
+    if (!payload.success) {
+      return reply.code(400).send({ error: 'invalid_payload', details: payload.error.flatten() })
+    }
+
+    if (!(await requireAdminMembership(app, request.actor.userId, params.data.id))) {
+      return reply.code(403).send({ error: 'forbidden' })
+    }
+
+    // L'adresse doit faire partie de la liste de l'opérateur : le serveur ne devient jamais
+    // un proxy vers un service interne choisi librement (SSRF).
+    if (!isImmichApiUrlAllowed(payload.data.apiUrl)) {
+      return reply.code(400).send({ error: 'api_url_not_allowed' })
+    }
+
+    const treeId = params.data.id
+    const existing = await app.prisma.treeImmichConfig.findUnique({
+      where: { treeId },
+      select: { apiUrl: true, apiKeyEnc: true },
+    })
+
+    // Sans nouvelle clé, la clé en place est conservée — mais il en faut une pour une
+    // première configuration : on ne devine jamais d'identifiants ailleurs.
+    if (!payload.data.apiKey && !existing) {
+      return reply.code(400).send({ error: 'api_key_required' })
+    }
+
+    // Changer d'instance n'emmène jamais la clé de l'ancienne : elle ne vaut rien pour la
+    // nouvelle, et on ne l'envoie pas à un serveur qui n'est pas le sien.
+    if (existing && !payload.data.apiKey
+      && normalizeImmichApiUrl(existing.apiUrl) !== normalizeImmichApiUrl(payload.data.apiUrl)) {
+      return reply.code(400).send({ error: 'api_key_required' })
+    }
+
+    const apiKeyEnc = payload.data.apiKey
+      ? encryptImmichApiKey(payload.data.apiKey)
+      : existing!.apiKeyEnc
+
+    const config = await app.prisma.treeImmichConfig.upsert({
+      where: { treeId },
+      create: { treeId, apiUrl: payload.data.apiUrl, apiKeyEnc },
+      update: { apiUrl: payload.data.apiUrl, apiKeyEnc },
+      select: { apiUrl: true, updatedAt: true },
+    })
+
+    // Journal d'audit : jamais la clé, seulement le fait qu'elle a changé.
+    await app.prisma.auditLog.create({
+      data: {
+        treeId,
+        actorType: 'user',
+        actorId: request.actor.userId,
+        action: 'immich_config_updated',
+        entityType: 'tree_immich_config',
+        entityId: treeId,
+        payloadJson: { apiUrl: payload.data.apiUrl, apiKeyChanged: Boolean(payload.data.apiKey) },
+      },
+    })
+
+    return reply.send({ config: immichConfigSummary(config) })
+  })
+
+  app.delete('/trees/:id/immich/config', async (request, reply) => {
+    if (!request.actor || request.actor.kind !== 'user') {
+      return reply.code(401).send({ error: 'authentication_required' })
+    }
+
+    const params = treeParamSchema.safeParse(request.params)
+    if (!params.success) {
+      return reply.code(400).send({ error: 'invalid_params' })
+    }
+
+    if (!(await requireAdminMembership(app, request.actor.userId, params.data.id))) {
+      return reply.code(403).send({ error: 'forbidden' })
+    }
+
+    const treeId = params.data.id
+    const removed = await app.prisma.treeImmichConfig.deleteMany({ where: { treeId } })
+
+    if (removed.count > 0) {
+      await app.prisma.auditLog.create({
+        data: {
+          treeId,
+          actorType: 'user',
+          actorId: request.actor.userId,
+          action: 'immich_config_removed',
+          entityType: 'tree_immich_config',
+          entityId: treeId,
+          payloadJson: {},
+        },
+      })
+    }
+
+    return reply.send({ config: { configured: false, apiUrl: null, updatedAt: null } })
+  })
+
   app.get('/trees/:id/immich/status', async (request, reply) => {
     if (!request.actor || request.actor.kind !== 'user') {
       return reply.code(401).send({ error: 'authentication_required' })
@@ -78,11 +235,11 @@ export const immichRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: 'forbidden' })
     }
 
-    if (!isImmichConfigured()) {
+    const client = await getTreeImmichClient(app.prisma, params.data.id)
+    if (!client) {
       return reply.send({ available: false, reason: 'not_configured' })
     }
 
-    const client = requireConfiguredClient()!
     const available = await client.ping()
     return reply.send({ available, reason: available ? null : 'unreachable' })
   })
@@ -101,7 +258,7 @@ export const immichRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: 'forbidden' })
     }
 
-    const client = requireConfiguredClient()
+    const client = await getTreeImmichClient(app.prisma, params.data.id)
     if (!client) {
       return reply.code(503).send({ error: 'immich_not_configured' })
     }
@@ -130,7 +287,7 @@ export const immichRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: 'forbidden' })
     }
 
-    const client = requireConfiguredClient()
+    const client = await getTreeImmichClient(app.prisma, params.data.id)
     if (!client) {
       return reply.code(503).send({ error: 'immich_not_configured' })
     }
@@ -169,7 +326,7 @@ export const immichRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: 'forbidden' })
     }
 
-    const client = requireConfiguredClient()
+    const client = await getTreeImmichClient(app.prisma, params.data.id)
     if (!client) {
       return reply.code(503).send({ error: 'immich_not_configured' })
     }
@@ -229,6 +386,13 @@ export const immichRoutes: FastifyPluginAsync = async (app) => {
       ])
 
       return reply.send({ ok: true, avatarUpdated: false, immichPersonId })
+    }
+
+    // Un portrait déjà en place ne se remplace jamais en silence : sans accord explicite,
+    // l'association s'arrête avant d'écrire quoi que ce soit. Le front transforme ce refus
+    // en demande de confirmation puis rejoue la requête avec replaceAvatar.
+    if (person.avatarPath && !payload.data.replaceAvatar) {
+      return reply.code(409).send({ error: 'avatar_exists' })
     }
 
     // La vignette passe par le même traitement qu'un portrait envoyé : type lu dans les octets,
@@ -318,6 +482,8 @@ export const immichRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: 'forbidden' })
     }
 
+    // Pas de garde « non configuré » ici : le retrait d'association ne parle jamais à Immich,
+    // et c'est le seul moyen de nettoyer des associations passées après une déconnexion.
     const { personId } = payload.data
     const treeId = params.data.id
 
@@ -329,9 +495,15 @@ export const immichRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(404).send({ error: 'person_not_found' })
     }
 
+    // Le graphe ne dit plus qui est associé : le retrait se propose toujours côté front. Sans
+    // association en place, il ne fait rien — pas d'écriture, pas d'entrée d'audit.
+    if (!person.immichPersonId) {
+      return reply.send({ ok: true, avatarRemoved: false })
+    }
+
     // Le portrait vient d'Immich uniquement si son fichier porte notre préfixe. Un portrait
     // envoyé à la main reste en place : seule l'association est retirée.
-    const avatarFromImmich = person.avatarPath !== null && path.basename(person.avatarPath).startsWith('immich-')
+    const avatarFromImmich = isImmichAvatarPath(person.avatarPath)
 
     const updateData: {
       immichPersonId: null

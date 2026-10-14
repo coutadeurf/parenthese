@@ -1,4 +1,7 @@
+import type { PrismaClient } from '@prisma/client'
+
 import { env } from '../config/env.js'
+import { decryptImmichApiKey } from './immich-secret.js'
 
 // Client Immich : la reconnaissance des visages lit les personnes et leurs vignettes.
 // Contrat vérifié sur la spécification OpenAPI officielle d'Immich v3.1.0 :
@@ -157,13 +160,76 @@ export class ImmichClient {
   }
 }
 
-export function isImmichConfigured(): boolean {
-  return env.IMMICH_ENABLED && Boolean(env.IMMICH_API_URL && env.IMMICH_API_KEY)
-}
-
-export function getImmichClient(): ImmichClient | null {
-  if (!isImmichConfigured()) {
+// Instance Immich normalisée pour comparaison : origine + chemin, sans slash final. Null si l'URL
+// est mal formée ou d'un autre protocole que http(s).
+export function normalizeImmichApiUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null
+    }
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+  } catch {
     return null
   }
-  return new ImmichClient(env.IMMICH_API_URL!, env.IMMICH_API_KEY!)
+}
+
+let allowedApiUrlsCache: string[] | undefined
+
+// Instances Immich autorisées par l'opérateur du serveur (IMMICH_ALLOWED_API_URLS). C'est la seule
+// liste d'adresses possibles : les administrateurs d'un arbre y choisissent la leur, le serveur
+// ne devient jamais un proxy vers un service interne choisi librement. Les entrées invalides sont
+// ignorées avec un avertissement.
+export function getImmichAllowedApiUrls(): string[] {
+  if (allowedApiUrlsCache !== undefined) {
+    return allowedApiUrlsCache
+  }
+
+  const urls: string[] = []
+  for (const entry of env.IMMICH_ALLOWED_API_URLS.split(',')) {
+    const trimmed = entry.trim()
+    if (!trimmed) {
+      continue
+    }
+    const normalized = normalizeImmichApiUrl(trimmed)
+    if (!normalized) {
+      console.warn(`IMMICH_ALLOWED_API_URLS : entrée ignorée (URL http(s) invalide) : ${trimmed}`)
+      continue
+    }
+    if (!urls.includes(normalized)) {
+      urls.push(normalized)
+    }
+  }
+  allowedApiUrlsCache = urls
+  return urls
+}
+
+export function isImmichApiUrlAllowed(value: string): boolean {
+  const normalized = normalizeImmichApiUrl(value)
+  return normalized !== null && getImmichAllowedApiUrls().includes(normalized)
+}
+
+// Connexion Immich d'un arbre : résolue par arbre, côté serveur, à chaque requête. Pas de client
+// global qui garderait les identifiants d'un arbre et pourrait servir un autre ; pas d'héritage
+// de configuration du serveur. Une clé illisible (JWT_SECRET changé) vaut « non configuré », et
+// une adresse retirée de la liste de l'opérateur aussi : la connexion existante cesse de marcher.
+export async function getTreeImmichClient(prisma: PrismaClient, treeId: string): Promise<ImmichClient | null> {
+  const config = await prisma.treeImmichConfig.findUnique({
+    where: { treeId },
+    select: { apiUrl: true, apiKeyEnc: true },
+  })
+  if (!config) {
+    return null
+  }
+
+  const apiKey = decryptImmichApiKey(config.apiKeyEnc)
+  if (!apiKey) {
+    return null
+  }
+
+  if (!isImmichApiUrlAllowed(config.apiUrl)) {
+    return null
+  }
+
+  return new ImmichClient(config.apiUrl, apiKey)
 }

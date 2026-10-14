@@ -1,6 +1,8 @@
 ﻿import { useState, useEffect, useRef, forwardRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Save, Trash2, Plus, X, Search, Check, Play, ImagePlus, Sparkles } from 'lucide-react'
 import { getParents, getChildren, getPersonUnions, getPersonMedias, filiations, persons, unions } from '../data/mockData'
+import { fetchImmichConfig } from '../api/immichApi.js'
 import GeoMediaThumbnail from './GeoMediaThumbnail'
 import ImmichFacePanel from './ImmichFacePanel.jsx'
 import './PersonCard.css'
@@ -60,6 +62,13 @@ const PersonCard = ({
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showImmichPanel, setShowImmichPanel] = useState(false)
+  // null : connexion Immich de l'arbre inconnue, puis booléen. Le menu de source ne se propose
+  // qu'à qui peut agir (owner/admin de l'arbre, comme pour toute action Immich) et seulement
+  // si l'arbre est connecté ou qu'une association passée demande un nettoyage.
+  const [immichConfigured, setImmichConfigured] = useState(null)
+  const [showSourceMenu, setShowSourceMenu] = useState(false)
+  const [sourceMenuPos, setSourceMenuPos] = useState({ top: 0, left: 0 })
+  const sourceBtnRef = useRef(null)
 
   // Inline relation search state
   const [activeRelationSearch, setActiveRelationSearch] = useState(null) // 'parent' | 'spouse' | 'child' | null
@@ -75,7 +84,47 @@ const PersonCard = ({
     setActiveRelationSearch(null)
     setRelationSearchQuery('')
     setSaveSuccess(false)
+    setShowSourceMenu(false)
   }, [person.id])
+
+  // Connexion Immich de l'arbre : métadonnées sans clé. Une erreur (rôle périmé, réseau) se
+  // traduit par « non configuré » : la fiche reste utilisable, simplement sans choix de source.
+  useEffect(() => {
+    let cancelled = false
+    setImmichConfigured(null)
+    setShowSourceMenu(false)
+    if (!editMode || !treeId || !onImmichChange || !immichToken) return undefined
+    fetchImmichConfig(treeId, immichToken)
+      .then(({ config }) => { if (!cancelled) setImmichConfigured(Boolean(config?.configured)) })
+      .catch(() => { if (!cancelled) setImmichConfigured(false) })
+    return () => { cancelled = true }
+  }, [editMode, treeId, immichToken, onImmichChange])
+
+  useEffect(() => {
+    if (!showSourceMenu) return undefined
+    const onKeyDown = (event) => { if (event.key === 'Escape') setShowSourceMenu(false) }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [showSourceMenu])
+
+  const immichUsable = Boolean(immichConfigured || person.avatarFromImmich)
+  const openAvatarPicker = () => {
+    if (avatarActionLoading) return
+    if (immichUsable) {
+      const rect = sourceBtnRef.current?.getBoundingClientRect()
+      if (rect) {
+        setSourceMenuPos({
+          top: Math.round(rect.bottom) + 6,
+          left: Math.round(Math.min(rect.left, window.innerWidth - 252)),
+        })
+      }
+      setShowSourceMenu(true)
+    } else {
+      avatarInputRef.current?.click()
+    }
+  }
+  const chooseFileSource = () => { setShowSourceMenu(false); avatarInputRef.current?.click() }
+  const chooseImmichSource = () => { setShowSourceMenu(false); setShowImmichPanel(true) }
 
   // Focus search input when relation search opens
   useEffect(() => {
@@ -368,17 +417,25 @@ const PersonCard = ({
           )}
           {editMode && onAvatarUpload && (
             <div className="pc-photo-actions">
-              <button type="button" className="pc-photo-btn" onClick={() => avatarInputRef.current?.click()} disabled={avatarActionLoading}>
+              <button
+                ref={sourceBtnRef}
+                type="button"
+                className="pc-photo-btn"
+                onClick={openAvatarPicker}
+                disabled={avatarActionLoading}
+                aria-haspopup="menu"
+                aria-expanded={showSourceMenu}
+              >
                 {person.photo ? t('Changer') : t('Ajouter une photo')}
               </button>
               {person.photo && (
-                <button type="button" className="pc-photo-btn pc-photo-btn--danger" onClick={() => onAvatarDelete?.(person.id)} disabled={avatarActionLoading}>
+                <button
+                  type="button"
+                  className="pc-photo-btn pc-photo-btn--danger"
+                  onClick={() => onAvatarDelete?.(person.id, person.avatarFromImmich)}
+                  disabled={avatarActionLoading}
+                >
                   {t('Retirer')}
-                </button>
-              )}
-              {treeId && onImmichChange && (
-                <button type="button" className="pc-photo-btn" onClick={() => setShowImmichPanel(true)} disabled={avatarActionLoading}>
-                  <Sparkles size={14} aria-hidden="true" /> {person.immichPersonId ? t('Visage Immich') : t('Depuis Immich')}
                 </button>
               )}
             </div>
@@ -699,6 +756,24 @@ const PersonCard = ({
             </>
           )}
         </footer>
+      )}
+
+      {/* ── Choix de la source du portrait (menu contextuel) ── */}
+      {showSourceMenu && (
+        createPortal(
+          <>
+            <div className="pc-source-backdrop" onClick={() => setShowSourceMenu(false)} />
+            <div className="pc-source-menu pz-menu" role="menu" aria-label={t('Source du portrait')} style={{ top: `${sourceMenuPos.top}px`, left: `${sourceMenuPos.left}px` }}>
+              <button type="button" role="menuitem" className="pz-menu-item" onClick={chooseFileSource}>
+                <ImagePlus size={16} aria-hidden="true" /> {t('Depuis un fichier')}
+              </button>
+              <button type="button" role="menuitem" className="pz-menu-item" onClick={chooseImmichSource}>
+                <Sparkles size={16} aria-hidden="true" /> {t('Depuis Immich')}
+              </button>
+            </div>
+          </>,
+          document.body,
+        )
       )}
 
       {/* ── Association d'un visage Immich (modale) ── */}
