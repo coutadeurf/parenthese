@@ -9,7 +9,7 @@ Website: [parenthese.io/en](https://parenthese.io/en/) · Demo, no account neede
 ![The demo tree, with Jean Dupont's profile open and his photos](docs/demo-tree.png)
 
 - **License:** source-available under [PolyForm Noncommercial 1.0.0](LICENSE). Free to read, modify and self-host for non-commercial use. Not an OSI open source license, see [License](#license).
-- **How it was made:** designed and directed by Ilies Allali. Most of the code was written with Claude Code (Anthropic), then reviewed and tested before being published.
+- **How it was made:** designed and directed by [Ilies Allali](https://iliesallali.design/). Most of the code was written with Claude Code (Anthropic), then reviewed and tested before being published.
 
 ## What it does
 
