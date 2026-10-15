@@ -242,7 +242,7 @@ describe('computeRootedLayout', () => {
         person('gp_pere'), person('gm_pere'), person('beau_pere'),
         person('ggp_p'), person('ggm_p'),
         person('p_bm'), person('m_bm'),
-        person('ggp_bm'), person('ggm_bm'),
+        person('ggp_bm'), person('ggm_bm'), person('oncle_bm'),
         person('frere_pere'), person('conjoint_frere'), person('neveu'),
         person('soeur_pere'), person('conjoint_soeur'), person('niece1'), person('niece2'),
       ].map((p, i) => ({ ...p, displayOrder: i })),
@@ -257,6 +257,9 @@ describe('computeRootedLayout', () => {
         union('u_soeur', 'soeur_pere', 'conjoint_soeur'),
       ],
       filiations: [
+        // L'oncle de la mère est créé avant sa lignée directe : sans classement par
+        // proximité avec la racine, il se rangerait contre le couple, devant les parents.
+        fil('f0b', 'oncle_bm', 'u_ggp_bm'),
         fil('f1', 'fils', 'u_mariage'),
         fil('f2', 'fille', 'u_mariage'),
         fil('f3', 'pere', 'u_parents_pere'),
@@ -274,7 +277,9 @@ describe('computeRootedLayout', () => {
     const result = computeRootedLayout(graph, 'fils')
     expectGraphPreserved(result, graph)
 
-    // La lignée de la mère s'insère à côté du couple (flanc), à distance bornée
+    // La lignée de la mère s'insère à côté du couple (flanc), à distance bornée,
+    // et sa ligne directe (les parents de la mère) reste contre le couple :
+    // l'oncle, collatéral, est repoussé au-delà.
     const rightEdge = (id) => {
       const n = result.children.find((c) => c.id === `p-${id}`)
       return n.x + n.width
@@ -284,9 +289,10 @@ describe('computeRootedLayout', () => {
       return n.x
     }
     const coupleRight = Math.max(rightEdge('pere'), rightEdge('mere'))
-    const gap = Math.min(leftEdge('p_bm'), leftEdge('m_bm')) - coupleRight
+    const gap = leftEdge('p_bm') - coupleRight
     expect(gap).toBeGreaterThanOrEqual(0)
     expect(gap).toBeLessThanOrEqual(2 * PERSON_W)
+    expect(leftEdge('p_bm')).toBeLessThan(leftEdge('oncle_bm'))
 
     // Beaux-parents au niveau des parents du père (convention Geneanet), et générations respectées
     expect(genOf(result, 'p_bm')).toBe(genOf(result, 'gp_pere'))

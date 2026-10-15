@@ -165,7 +165,7 @@ export function computeBlockLayout(graphData = null, options = {}) {
     const gen = genOf(chain)
     const rowW = chainWidth(chain)
     const offsets = chainOffsets(chain)
-    const childBlocks = []
+    let childBlocks = []
     const external = []
     for (const id of chain) {
       if (byId.get(id)._type !== 'union') continue
@@ -174,6 +174,15 @@ export function computeBlockLayout(graphData = null, options = {}) {
         if (!placed.has(kc)) childBlocks.push(buildBlock(kc))
         else { external.push({ kid: k, unionId: id }); externalEdges.add(`${id}>${k}`) }
       }
+    }
+    // Mode « rooted » : la lignée la plus proche de la racine se range à gauche du bloc,
+    // la ligne directe contre le couple quand le bloc s'insère en flanc droit — oncles,
+    // tantes et cousins sont repoussés vers l'extérieur. (L'ordre de construction, qui
+    // décide quelle lignée revendique une chaîne partagée, reste inchangé.)
+    if (options.rootPersonId != null && childBlocks.length > 1) {
+      childBlocks = [...childBlocks].sort((a, b) => (
+        distRank(a.chain) - distRank(b.chain) || countDesc(b.chain) - countDesc(a.chain)
+      ))
     }
     const packed = packBlocks(childBlocks, FAMILY_GAP)
 
@@ -281,47 +290,36 @@ export function computeBlockLayout(graphData = null, options = {}) {
   // Insertion en flanc (mode « rooted ») : plutôt que le créneau libre le plus proche —
   // souvent après toutes les familles collatérales de la lignée qui a revendiqué le
   // couple, d'où des beaux-parents rejetés loin à droite — le bloc est inséré dans une
-  // bande ouverte juste à côté de la chaîne de son enfant (le couple pour une lignée
-  // alliée), du côté où l'enfant se trouve. Les contenus au-delà de la bande sont
-  // translatés d'un bloc vers l'extérieur, jamais replacés un par un : aucun
-  // chevauchement possible. Renvoie false si l'enfant n'est pas encore placé (repli).
-  const flankEnds = new Map() // chaîne enfant → bornes des flancs déjà insérés de part et d'autre
+  // bande ouverte juste à droite de la chaîne de son enfant (le couple pour une lignée
+  // alliée). Ses lignées étant rangées par proximité avec la racine (voir buildBlock),
+  // la ligne directe (les parents de l'enfant) se retrouve contre le couple, et les
+  // collatéraux — oncles, tantes, cousins — repoussés vers l'extérieur. Les contenus
+  // au-delà de la bande sont translatés d'un bloc vers l'extérieur, jamais replacés un
+  // par un : aucun chevauchement possible. Renvoie false si l'enfant n'est pas encore
+  // placé (repli).
+  const flankRightEnd = new Map() // chaîne enfant → borne droite du dernier flanc inséré
   const maxNodeWidth = Math.max(...nodes.map((n) => n.width))
   const placeFlank = (block) => {
     const placedKids = block.external.filter(({ kid }) => pos.has(kid))
     if (!placedKids.length) return false
     const kid = placedKids[0].kid
     const kidChain = chainOf.get(kid)
-    let chainL = Infinity, chainR = -Infinity
+    let chainR = -Infinity
     if (kidChain) {
       for (const id of kidChain) {
         const x = pos.get(id)
         if (x == null) continue
-        chainL = Math.min(chainL, x)
         chainR = Math.max(chainR, x + byId.get(id).width)
       }
     }
-    if (!Number.isFinite(chainL)) return false
-    const kidCenter = pos.get(kid) + byId.get(kid).width / 2
-    const flank = flankEnds.get(kidChain) || { left: Infinity, right: -Infinity }
-    const toTheRight = kidCenter > (chainL + chainR) / 2
+    if (!Number.isFinite(chainR)) return false
     const shift = block.width + FAMILY_GAP * 2 + maxNodeWidth
-    if (toTheRight) {
-      const start = Math.max(chainR, flank.right) + FAMILY_GAP
-      for (const [id, x] of pos) {
-        if (x + byId.get(id).width > start - NODE_SPACING) pos.set(id, x + shift)
-      }
-      block.place(start)
-      flank.right = Math.max(flank.right, start + block.width)
-    } else {
-      const end = Math.min(chainL, flank.left) - FAMILY_GAP
-      for (const [id, x] of pos) {
-        if (x < end + NODE_SPACING) pos.set(id, x - shift)
-      }
-      block.place(end - block.width)
-      flank.left = Math.min(flank.left, end - block.width)
+    const start = Math.max(chainR, flankRightEnd.get(kidChain) ?? -Infinity) + FAMILY_GAP
+    for (const [id, x] of pos) {
+      if (x + byId.get(id).width > start - NODE_SPACING) pos.set(id, x + shift)
     }
-    flankEnds.set(kidChain, flank)
+    block.place(start)
+    flankRightEnd.set(kidChain, Math.max(flankRightEnd.get(kidChain) ?? -Infinity, start + block.width))
     return true
   }
   if (options.rootPersonId != null) {
