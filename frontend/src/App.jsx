@@ -460,6 +460,7 @@ function App() {
     await tree.refreshCurrentTreeGraph({
       relayout: options.relayout !== false,
       avatarCacheBust: options.avatarCacheBust,
+      rootPersonIdFromServer: options.rootPersonIdFromServer === true,
     })
     if (personId !== null && personId !== undefined) {
       const refreshedPerson = persons.find((candidate) => String(candidate.id) === String(personId)) || null
@@ -2579,6 +2580,12 @@ function App() {
     openPhotoStart({ personsImported: (result?.personsCreated || 0) + (result?.personsReused || 0), refs, mediaRefs })
   }, [refreshTreeAndKeepSelection, openPhotoStart, tree.treeContext.treeId])
 
+  // La personne racine vient d'être changée dans la configuration : le graphe est rechargé
+  // pour relire la racine côté serveur et réorganiser l'affichage autour d'elle.
+  const handleRootPersonChanged = useCallback(async () => {
+    await refreshTreeAndKeepSelection(tree.selectedPerson?.id ?? null, { relayout: true, rootPersonIdFromServer: true })
+  }, [refreshTreeAndKeepSelection, tree.selectedPerson])
+
   // Un portrait envoyé sans recharger l'arbre (rechargé une fois, à la fermeture de la fenêtre).
   // Renvoie un message d'erreur, ou '' si c'est fait.
   const sendPortrait = useCallback(async (personId, file) => {
@@ -3022,6 +3029,8 @@ function App() {
         visible={adminPanelVisible}
         treeId={tree.treeContext.treeId}
         authToken={tree.treeContext.accessToken}
+        persons={persons}
+        onRootPersonChanged={handleRootPersonChanged}
         isAdmin={userRole.isAdmin}
         onTreeDeleted={handleTreeDeleted}
         onGedcomImported={handleGedcomImported}

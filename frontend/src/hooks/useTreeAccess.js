@@ -124,7 +124,9 @@ export function useTreeAccess() {
       treeOwnerEmail: treeContext.treeOwnerEmail,
       role: treeContext.role,
       accessMode: treeContext.accessMode,
-      rootPersonId: treeContext.rootPersonId,
+      // Relit la racine depuis le graphe plutôt que de conserver celle déjà chargée :
+      // la configuration de l'arbre vient peut-être de la changer.
+      rootPersonId: options.rootPersonIdFromServer === true ? undefined : treeContext.rootPersonId,
       promptWizard: false,
       relayout: options.relayout !== false,
       avatarCacheBust: options.avatarCacheBust,
