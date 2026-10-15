@@ -39,7 +39,7 @@ ROOT=<id> FIXTURE=synth1300 npm run bench -- M6 # changer de racine réorganise 
 
 - sans paramètre : blocs familiaux par défaut (comportement inchangé) ;
 - `?layout=sugiyama` : Sugiyama ;
-- `?layout=rooted&root=<id>` : blocs familiaux organisés autour de la personne racine (générations relatives à la racine, lignées alliées côte à côte, connecteurs de couloir). Sans `root`, la personne de départ de l'arbre sert de racine ; id invalide → repli déterministe (avertissement console).
+- `?layout=rooted&root=<id>` : arbre pedigree organisé autour de la personne racine (générations relatives à la racine, couples ancrés au-dessus de leur enfant de la ligne directe, connecteurs de couloir). Sans `root`, la personne de départ de l'arbre sert de racine ; id invalide → repli déterministe (avertissement console).
 
 ## Performance, parcours compte, landing
 

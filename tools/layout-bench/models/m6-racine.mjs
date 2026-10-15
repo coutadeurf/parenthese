@@ -1,6 +1,7 @@
-// M6 : layout « rooted » du repo — blocs familiaux organisés autour d'une personne racine
-// (générations relatives à la racine, lignées ordonnées par proximité, voir frontend
-// src/components/galaxy/rootedLayout.js). La racine vient de ROOT=<id> ou du champ
+// M6 : layout « rooted » du repo — arbre pedigree organisé autour d'une personne
+// racine (générations relatives à la racine, chaînes de couples ancrées au-dessus
+// de leur enfant de la ligne directe, voir frontend/src/components/galaxy/
+// pedigreeLayout.js et rootedLayout.js). La racine vient de ROOT=<id> ou du champ
 // rootPersonId de la fixture, sinon du repli déterministe du layout.
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
@@ -19,7 +20,7 @@ function fixtureRootPersonId() {
   }
 }
 
-export const name = 'M6 blocs ancrés racine'
+export const name = 'M6 pedigree ancré racine'
 
 export async function layout(graphData) {
   const result = rootedModule.computeRootedLayout(graphData, fixtureRootPersonId())
