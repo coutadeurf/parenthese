@@ -300,6 +300,58 @@ describe('computeRootedLayout', () => {
     expect(genOf(result, 'pere')).toBe(genOf(result, 'fils') - 1)
   })
 
+  it('flanque la lignée du côté de son enfant : la lignée du père à gauche du couple', () => {
+    // Racine = fils. La lignée de la mère (sans grands-parents, plus proche de la racine)
+    // revendique le couple ; celle du père flanque donc à GAUCHE du couple — le père est
+    // le premier partenaire — sa ligne directe (les parents du père) contre le couple,
+    // l'oncle au-delà. La lignée du père est ici créée avant l'oncle : sans classement
+    // orienté par le côté du flanc, l'oncle se rangerait contre le couple.
+    const graph = {
+      persons: [
+        person('fils'), person('fille'),
+        person('pere'), person('mere'),
+        person('gp_p'), person('gm_p'),
+        person('ggp_p'), person('ggm_p'), person('oncle_p'),
+        person('p_bm'), person('m_bm'),
+      ].map((p, i) => ({ ...p, displayOrder: i })),
+      unions: [
+        union('u_mariage', 'pere', 'mere'),
+        union('u_parents_p', 'gp_p', 'gm_p'),
+        union('u_ggp_p', 'ggp_p', 'ggm_p'),
+        union('u_parents_m', 'p_bm', 'm_bm'),
+      ],
+      filiations: [
+        fil('f1', 'fils', 'u_mariage'),
+        fil('f2', 'fille', 'u_mariage'),
+        fil('f3', 'pere', 'u_parents_p'),
+        fil('f4', 'mere', 'u_parents_m'),
+        fil('f5', 'gp_p', 'u_ggp_p'),
+        fil('f6', 'oncle_p', 'u_ggp_p'),
+      ],
+    }
+    const result = computeRootedLayout(graph, 'fils')
+    expectGraphPreserved(result, graph)
+
+    const leftEdge = (id) => {
+      const n = result.children.find((c) => c.id === `p-${id}`)
+      return n.x
+    }
+    const rightEdge = (id) => {
+      const n = result.children.find((c) => c.id === `p-${id}`)
+      return n.x + n.width
+    }
+    // La lignée du père est à gauche du couple, ses parents contre lui (distance bornée)
+    const coupleLeft = Math.min(leftEdge('pere'), leftEdge('mere'))
+    const parentsRight = Math.max(rightEdge('gp_p'), rightEdge('gm_p'))
+    const gap = coupleLeft - parentsRight
+    expect(gap).toBeGreaterThanOrEqual(0)
+    expect(gap).toBeLessThanOrEqual(2 * PERSON_W)
+    // L'oncle, collatéral, reste au-delà des parents
+    expect(leftEdge('oncle_p')).toBeLessThan(leftEdge('gp_p'))
+    // Et les deux lignées parentales restent au même niveau (convention Geneanet)
+    expect(genOf(result, 'gp_p')).toBe(genOf(result, 'p_bm'))
+  })
+
   it('place une composante déconnectée sans la perdre ni la dupliquer', () => {
     const graph = {
       persons: ['pa', 'ma', 'root', 'qpa', 'qma', 'qkid'].map(person),
