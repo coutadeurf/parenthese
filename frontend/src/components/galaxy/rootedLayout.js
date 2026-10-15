@@ -1,17 +1,16 @@
 import { persons as globalPersons, unions as globalUnions, filiations as globalFiliations } from '../../data/mockData'
-import { computeBlockLayout } from './blockLayout'
+import { computePedigreeLayout } from './pedigreeLayout'
 
 // ============================================================
-// Layout « rooted » : blocs familiaux organisés autour d'une
-// personne racine (?layout=rooted&root=<id>).
+// Layout « rooted » : l'arbre généalogique classique organisé
+// autour d'une personne racine (?layout=rooted&root=<id>).
 //
 // Les générations sont relatives à la racine (ancêtres au-dessus,
 // descendants en dessous, voir elkLayout.computeRootedGenerations)
-// et les lignées sont placées par proximité avec elle (voir
-// blockLayout.computeBlockLayout) : la chaîne d'un couple partagé
-// par deux lignées est placée sous celle qui est la plus proche de
-// la racine, ce qui raccourcit les arêtes inter-branches et réduit
-// les renvois « Voir les parents ».
+// et chaque chaîne de couple est ancrée au-dessus de son enfant de
+// la ligne directe : la barre d'union à la verticale de l'enfant,
+// la lignée du père à gauche, celle de la mère à droite, les
+// collatéraux à l'extérieur de leur lignée (voir pedigreeLayout).
 // ============================================================
 
 // Racine de repli déterministe (id invalide ou absent) : la personne
@@ -49,7 +48,7 @@ export function resolveRootPersonId(graphData = null, rootPersonId = null) {
 
 export function computeRootedLayout(graphData = null, rootPersonId = null) {
   const rootId = resolveRootPersonId(graphData, rootPersonId)
-  const result = computeBlockLayout(graphData, rootId != null ? { rootPersonId: rootId } : {})
+  const result = computePedigreeLayout(graphData, rootId)
   result.rootPersonId = rootId
   return result
 }

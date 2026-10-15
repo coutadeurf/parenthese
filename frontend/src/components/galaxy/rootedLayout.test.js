@@ -11,10 +11,13 @@ const filDirect = (id, childId, parentId) => ({ id, childId, parentId, unionId: 
 
 const byIdMap = (result) => new Map(result.children.map((n) => [n.id, n]))
 const genOf = (result, id) => result.children.find((n) => n.id === `p-${id}`)._generation
-const centerX = (result, id) => {
-  const n = result.children.find((n2) => n2.id === id)
+const centerX = (result, nodeId) => {
+  const n = result.children.find((n2) => n2.id === nodeId)
   return n.x + n.width / 2
 }
+const personCenterX = (result, personId) => centerX(result, `p-${personId}`)
+// Tolérance d'ancrage : la barre d'union à la verticale de son enfant (± un espacement)
+const NODE_TOLERANCE = 30
 
 // Toute filiation valide (après normalisation) doit avoir une arête dans le layout,
 // et chaque personne exactement un nœud : aucune relation n'est perdue au passage.
@@ -113,9 +116,9 @@ describe('computeRootedLayout', () => {
     const intruders = sameGen.filter((n) => !kidIds.has(n.id) && n.x > minX && n.x < maxX)
     expect(intruders).toHaveLength(0)
 
-    // Parents centrés au-dessus de la fratrie
-    const kidsCenter = sameGen.reduce((s, n) => s + n.x + n.width / 2, 0) / sameGen.length
-    expect(Math.abs(centerX(result, 'u-u1') - kidsCenter)).toBeLessThanOrEqual(PERSON_W / 2)
+    // Convention du pedigree : les parents sont ancrés au-dessus de la racine
+    // (l'enfant de la ligne directe), pas au centre de la fratrie
+    expect(Math.abs(centerX(result, 'u-u1') - personCenterX(result, 'root'))).toBeLessThanOrEqual(NODE_TOLERANCE)
   })
 
   it('gère plusieurs partenaires : conjoints au niveau de la racine, enfants de chaque union dessous', () => {
@@ -230,11 +233,11 @@ describe('computeRootedLayout', () => {
     for (const e of renvois(rooted)) expect(e._corridor).toBeUndefined()
   })
 
-  it('range la lignée alliée en flanc du couple, pas après les familles collatérales', () => {
-    // Racine = fils. La lignée du père (grands-parents, parents, fratrie du père avec
-    // conjoints et enfants) revendique le couple ; celle de la mère doit venir se
-    // ranger juste à côté du couple, en repoussant les familles collatérales de la
-    // lignée du père vers l'extérieur — pas être rejetée après elles.
+  it('pedigree : chaque couple ancré au-dessus de son enfant, lignées de part et d\'autre', () => {
+    // Racine = fils. L'arbre classique : la barre d'union à la verticale de son
+    // enfant de la ligne directe, la lignée du père à gauche, celle de la mère
+    // à droite, et les collatéraux (fratries, oncles) à l'extérieur de leur
+    // lignée — jamais dans le couloir de la ligne directe.
     const graph = {
       persons: [
         person('fils'), person('fille'),
@@ -257,9 +260,6 @@ describe('computeRootedLayout', () => {
         union('u_soeur', 'soeur_pere', 'conjoint_soeur'),
       ],
       filiations: [
-        // L'oncle de la mère est créé avant sa lignée directe : sans classement par
-        // proximité avec la racine, il se rangerait contre le couple, devant les parents.
-        fil('f0b', 'oncle_bm', 'u_ggp_bm'),
         fil('f1', 'fils', 'u_mariage'),
         fil('f2', 'fille', 'u_mariage'),
         fil('f3', 'pere', 'u_parents_pere'),
@@ -272,40 +272,41 @@ describe('computeRootedLayout', () => {
         fil('f10', 'soeur_pere', 'u_parents_pere'),
         fil('f11', 'niece1', 'u_soeur'),
         fil('f12', 'niece2', 'u_soeur'),
+        fil('f0b', 'oncle_bm', 'u_ggp_bm'),
       ],
     }
     const result = computeRootedLayout(graph, 'fils')
     expectGraphPreserved(result, graph)
 
-    // La lignée de la mère s'insère à côté du couple (flanc), à distance bornée,
-    // et sa ligne directe (les parents de la mère) reste contre le couple :
-    // l'oncle, collatéral, est repoussé au-delà.
-    const rightEdge = (id) => {
-      const n = result.children.find((c) => c.id === `p-${id}`)
-      return n.x + n.width
+    // Chaque union est ancrée à la verticale de son enfant de la ligne directe
+    for (const [unionId, personId] of [
+      ['u_mariage', 'fils'],
+      ['u_parents_pere', 'pere'],
+      ['u_ggp_p', 'gp_pere'],
+      ['u_parents_mere', 'mere'],
+      ['u_ggp_bm', 'p_bm'],
+    ]) {
+      expect(Math.abs(centerX(result, `u-${unionId}`) - personCenterX(result, personId))).toBeLessThanOrEqual(NODE_TOLERANCE)
     }
-    const leftEdge = (id) => {
-      const n = result.children.find((c) => c.id === `p-${id}`)
-      return n.x
-    }
-    const coupleRight = Math.max(rightEdge('pere'), rightEdge('mere'))
-    const gap = leftEdge('p_bm') - coupleRight
-    expect(gap).toBeGreaterThanOrEqual(0)
-    expect(gap).toBeLessThanOrEqual(2 * PERSON_W)
-    expect(leftEdge('p_bm')).toBeLessThan(leftEdge('oncle_bm'))
 
-    // Beaux-parents au niveau des parents du père (convention Geneanet), et générations respectées
+    // Lignée du père à gauche, lignée de la mère à droite
+    expect(personCenterX(result, 'ggp_p')).toBeLessThan(personCenterX(result, 'ggp_bm'))
+    // Les collatéraux du père restent à l'extérieur de sa lignée (à gauche),
+    // ceux de la mère à l'extérieur de la sienne
+    expect(personCenterX(result, 'frere_pere')).toBeLessThan(personCenterX(result, 'pere'))
+    expect(personCenterX(result, 'oncle_bm')).toBeLessThan(personCenterX(result, 'p_bm'))
+
+    // Générations respectées (convention Geneanet) : beaux-parents au niveau
+    // des parents du père, grands-parents au niveau suivant
     expect(genOf(result, 'p_bm')).toBe(genOf(result, 'gp_pere'))
     expect(genOf(result, 'ggp_bm')).toBe(genOf(result, 'ggp_p'))
     expect(genOf(result, 'pere')).toBe(genOf(result, 'fils') - 1)
   })
 
-  it('flanque la lignée du côté de son enfant : la lignée du père à gauche du couple', () => {
-    // Racine = fils. La lignée de la mère (sans grands-parents, plus proche de la racine)
-    // revendique le couple ; celle du père flanque donc à GAUCHE du couple — le père est
-    // le premier partenaire — sa ligne directe (les parents du père) contre le couple,
-    // l'oncle au-delà. La lignée du père est ici créée avant l'oncle : sans classement
-    // orienté par le côté du flanc, l'oncle se rangerait contre le couple.
+  it('pedigree : la lignée du père s\'étend à gauche du couple, celle de la mère à droite', () => {
+    // Racine = fils, le père est le premier partenaire du couple : sa lignée
+    // s'étend à gauche, celle de la mère à droite — de façon symétrique, sans
+    // que l'une des deux soit rejetée après les familles collatérales de l'autre.
     const graph = {
       persons: [
         person('fils'), person('fille'),
@@ -332,23 +333,18 @@ describe('computeRootedLayout', () => {
     const result = computeRootedLayout(graph, 'fils')
     expectGraphPreserved(result, graph)
 
-    const leftEdge = (id) => {
-      const n = result.children.find((c) => c.id === `p-${id}`)
-      return n.x
-    }
-    const rightEdge = (id) => {
-      const n = result.children.find((c) => c.id === `p-${id}`)
-      return n.x + n.width
-    }
-    // La lignée du père est à gauche du couple, ses parents contre lui (distance bornée)
-    const coupleLeft = Math.min(leftEdge('pere'), leftEdge('mere'))
-    const parentsRight = Math.max(rightEdge('gp_p'), rightEdge('gm_p'))
-    const gap = coupleLeft - parentsRight
-    expect(gap).toBeGreaterThanOrEqual(0)
-    expect(gap).toBeLessThanOrEqual(2 * PERSON_W)
-    // L'oncle, collatéral, reste au-delà des parents
-    expect(leftEdge('oncle_p')).toBeLessThan(leftEdge('gp_p'))
-    // Et les deux lignées parentales restent au même niveau (convention Geneanet)
+    // Unions ancrées au-dessus de leur enfant
+    expect(Math.abs(centerX(result, 'u-u_mariage') - personCenterX(result, 'fils'))).toBeLessThanOrEqual(NODE_TOLERANCE)
+    expect(Math.abs(centerX(result, 'u-u_parents_p') - personCenterX(result, 'pere'))).toBeLessThanOrEqual(NODE_TOLERANCE)
+    expect(Math.abs(centerX(result, 'u-u_ggp_p') - personCenterX(result, 'gp_p'))).toBeLessThanOrEqual(NODE_TOLERANCE)
+    expect(Math.abs(centerX(result, 'u-u_parents_m') - personCenterX(result, 'mere'))).toBeLessThanOrEqual(NODE_TOLERANCE)
+
+    // La séparation : lignée paternelle à gauche du couple, maternelle à droite
+    expect(personCenterX(result, 'ggp_p')).toBeLessThan(personCenterX(result, 'fils'))
+    expect(personCenterX(result, 'm_bm')).toBeGreaterThan(personCenterX(result, 'fils'))
+    // L'oncle du père, collatéral, reste à l'extérieur de la lignée paternelle
+    expect(personCenterX(result, 'oncle_p')).toBeLessThan(personCenterX(result, 'gp_p'))
+    // Les deux lignées parentales restent au même niveau
     expect(genOf(result, 'gp_p')).toBe(genOf(result, 'p_bm'))
   })
 
