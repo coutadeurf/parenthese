@@ -115,7 +115,7 @@ function mapRemotePersonToLocal(person, current = null) {
     profession: person?.profession || null,
     nationality: person?.nationality || null,
     photo: current?.photo || null,
-    immichPersonId: person?.immichPersonId ?? null,
+    avatarFromImmich: person?.avatarFromImmich ?? false,
   }
 }
 

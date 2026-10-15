@@ -211,6 +211,12 @@ export function applyMediaResponseHeaders(reply: FastifyReply, storedMimeType: s
   reply.header('Content-Disposition', `attachment; filename="${safeName}"`)
 }
 
+// Portrait venu d'une association Immich : son fichier porte le préfixe « immich- ». Le graphe
+// ne publie jamais l'identifiant Immich, seulement cette origine du portrait.
+export function isImmichAvatarPath(avatarPath: string | null | undefined): boolean {
+  return avatarPath != null && path.basename(avatarPath).startsWith('immich-')
+}
+
 // Efface un fichier du stockage, sans jamais sortir du dossier racine
 export async function removeStoredFile(storageRoot: string, relativePath: string | null | undefined): Promise<void> {
   if (!relativePath || /^https?:\/\//.test(relativePath)) return

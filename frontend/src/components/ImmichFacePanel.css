@@ -77,5 +77,16 @@
 
 .immich-empty { font: 500 13px var(--pz-sans); color: var(--pz-faint); text-align: center; padding: 12px 0; }
 .immich-error { margin: 0; }
+
+/* Demande de confirmation avant de remplacer un portrait déjà en place. */
+.immich-confirm {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--pz-danger);
+  border-radius: var(--pz-r-m);
+  background: var(--pz-danger-bg);
+  color: var(--pz-danger);
+  font: 500 13px/1.5 var(--pz-sans);
+}
 .immich-spin { animation: immich-rotate 900ms linear infinite; }
 @keyframes immich-rotate { to { transform: rotate(360deg); } }

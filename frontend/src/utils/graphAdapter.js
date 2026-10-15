@@ -57,7 +57,7 @@ export function adaptGraphForGalaxy(apiGraph, _treeId) {
     birthDate: p.birthDate,
     deathDate: p.deathDate,
     photo: p.avatarUrlPath ? `/api${p.avatarUrlPath}` : null,
-    immichPersonId: p.immichPersonId || null,
+    avatarFromImmich: Boolean(p.avatarFromImmich),
     frameType: 'round', // Default
   }))
 

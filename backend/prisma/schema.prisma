@@ -114,6 +114,7 @@ model Tree {
   memberships          TreeMembership[]
   sharedUserAccesses   UserTreeAccess[]
   settings             TreeSettings?
+  immichConfig         TreeImmichConfig?
   persons              Person[]
   unions               Union[]
   parentChildLinks     ParentChildLink[]
@@ -188,6 +189,19 @@ model TreeSettings {
   tree                      Tree               @relation(fields: [treeId], references: [id], onDelete: Cascade)
 
   @@map("tree_settings")
+}
+
+// Connexion Immich propre à chaque arbre (reconnaissance des visages) : l'adresse et la clé de
+// l'instance sont choisies par ses administrateurs, jamais héritées du serveur. La clé est
+// chiffrée au repos ; une ligne absente signifie « aucun accès Immich » pour cet arbre.
+model TreeImmichConfig {
+  treeId    String   @id
+  apiUrl    String
+  apiKeyEnc String
+  updatedAt DateTime @updatedAt
+  tree      Tree     @relation(fields: [treeId], references: [id], onDelete: Cascade)
+
+  @@map("tree_immich_configs")
 }
 
 model Person {
