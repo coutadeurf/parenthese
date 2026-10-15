@@ -230,6 +230,70 @@ describe('computeRootedLayout', () => {
     for (const e of renvois(rooted)) expect(e._corridor).toBeUndefined()
   })
 
+  it('range la lignée alliée en flanc du couple, pas après les familles collatérales', () => {
+    // Racine = fils. La lignée du père (grands-parents, parents, fratrie du père avec
+    // conjoints et enfants) revendique le couple ; celle de la mère doit venir se
+    // ranger juste à côté du couple, en repoussant les familles collatérales de la
+    // lignée du père vers l'extérieur — pas être rejetée après elles.
+    const graph = {
+      persons: [
+        person('fils'), person('fille'),
+        person('pere'), person('mere'), person('soeur_mere'),
+        person('gp_pere'), person('gm_pere'), person('beau_pere'),
+        person('ggp_p'), person('ggm_p'),
+        person('p_bm'), person('m_bm'),
+        person('ggp_bm'), person('ggm_bm'),
+        person('frere_pere'), person('conjoint_frere'), person('neveu'),
+        person('soeur_pere'), person('conjoint_soeur'), person('niece1'), person('niece2'),
+      ].map((p, i) => ({ ...p, displayOrder: i })),
+      unions: [
+        union('u_mariage', 'pere', 'mere'),
+        union('u_parents_pere', 'gp_pere', 'gm_pere'),
+        union('u_mere_beau_pere', 'gm_pere', 'beau_pere'),
+        union('u_ggp_p', 'ggp_p', 'ggm_p'),
+        union('u_parents_mere', 'p_bm', 'm_bm'),
+        union('u_ggp_bm', 'ggp_bm', 'ggm_bm'),
+        union('u_frere', 'frere_pere', 'conjoint_frere'),
+        union('u_soeur', 'soeur_pere', 'conjoint_soeur'),
+      ],
+      filiations: [
+        fil('f1', 'fils', 'u_mariage'),
+        fil('f2', 'fille', 'u_mariage'),
+        fil('f3', 'pere', 'u_parents_pere'),
+        fil('f4', 'mere', 'u_parents_mere'),
+        fil('f5', 'soeur_mere', 'u_parents_mere'),
+        fil('f6', 'gp_pere', 'u_ggp_p'),
+        fil('f7', 'p_bm', 'u_ggp_bm'),
+        fil('f8', 'frere_pere', 'u_parents_pere'),
+        fil('f9', 'neveu', 'u_frere'),
+        fil('f10', 'soeur_pere', 'u_parents_pere'),
+        fil('f11', 'niece1', 'u_soeur'),
+        fil('f12', 'niece2', 'u_soeur'),
+      ],
+    }
+    const result = computeRootedLayout(graph, 'fils')
+    expectGraphPreserved(result, graph)
+
+    // La lignée de la mère s'insère à côté du couple (flanc), à distance bornée
+    const rightEdge = (id) => {
+      const n = result.children.find((c) => c.id === `p-${id}`)
+      return n.x + n.width
+    }
+    const leftEdge = (id) => {
+      const n = result.children.find((c) => c.id === `p-${id}`)
+      return n.x
+    }
+    const coupleRight = Math.max(rightEdge('pere'), rightEdge('mere'))
+    const gap = Math.min(leftEdge('p_bm'), leftEdge('m_bm')) - coupleRight
+    expect(gap).toBeGreaterThanOrEqual(0)
+    expect(gap).toBeLessThanOrEqual(2 * PERSON_W)
+
+    // Beaux-parents au niveau des parents du père (convention Geneanet), et générations respectées
+    expect(genOf(result, 'p_bm')).toBe(genOf(result, 'gp_pere'))
+    expect(genOf(result, 'ggp_bm')).toBe(genOf(result, 'ggp_p'))
+    expect(genOf(result, 'pere')).toBe(genOf(result, 'fils') - 1)
+  })
+
   it('place une composante déconnectée sans la perdre ni la dupliquer', () => {
     const graph = {
       persons: ['pa', 'ma', 'root', 'qpa', 'qma', 'qkid'].map(person),

@@ -227,16 +227,28 @@ export function computeBlockLayout(graphData = null, options = {}) {
     if (ownExternal) anchored.push(block)
     else free.push(block)
   }
-  // Mode « rooted » : ranger les blocs libres pour placer côte à côte les lignées alliées
-  // (une arête externe entre deux blocs est d'autant plus courte qu'ils sont voisins).
-  // Parcours glouton : on part de la lignée de la racine, puis chaque bloc lié par un
-  // mariage à un bloc déjà rangé vient juste après ; à égalité, le plus proche de la
-  // racine d'abord. Les blocs sans lien suivent, par distance croissante.
-  if (options.rootPersonId != null && free.length > 1) {
+  // Mode « rooted » : les blocs libres mariés dans une autre lignée (beaux-parents et
+  // leurs ascendants) ne sont pas rangés dans la forêt — la lignée qui a revendiqué le
+  // couple y étale ses familles collatérales et les en sépare — mais insérés en flanc
+  // de la chaîne du couple après la pose de la forêt (voir placeFlank).
+  const freeInLaw = []
+  if (options.rootPersonId != null) {
+    for (const b of free) {
+      if (b.external.some(({ kid }) => free.some(o => o !== b && o.members.has(kid)))) freeInLaw.push(b)
+    }
+  }
+  const forestBlocks = free.filter(b => !freeInLaw.includes(b))
+  // Mode « rooted » : ranger les blocs de la forêt pour placer côte à côte les lignées
+  // alliées restantes (une arête externe entre deux blocs est d'autant plus courte
+  // qu'ils sont voisins). Parcours glouton : on part de la lignée de la racine, puis
+  // chaque bloc lié par un mariage à un bloc déjà rangé vient juste après ; à égalité,
+  // le plus proche de la racine d'abord. Les blocs sans lien suivent, par distance
+  // croissante.
+  if (options.rootPersonId != null && forestBlocks.length > 1) {
     const ownerOf = new Map()
-    free.forEach((b, i) => { for (const m of b.members) ownerOf.set(m, i) })
+    forestBlocks.forEach((b, i) => { for (const m of b.members) ownerOf.set(m, i) })
     const links = new Map()
-    free.forEach((b, i) => {
+    forestBlocks.forEach((b, i) => {
       for (const { kid, unionId } of b.external) {
         if (ownerOf.get(unionId) !== i) continue
         const j = ownerOf.get(kid)
@@ -247,29 +259,81 @@ export function computeBlockLayout(graphData = null, options = {}) {
     })
     const ordered = []
     const taken = new Set()
-    while (ordered.length < free.length) {
+    while (ordered.length < forestBlocks.length) {
       let pick = -1, pickLinked = false
-      for (let i = 0; i < free.length; i++) {
+      for (let i = 0; i < forestBlocks.length; i++) {
         if (taken.has(i)) continue
         const linked = [...(links.get(i) || [])].some(j => taken.has(j))
         if (pick === -1 || (linked && !pickLinked)
-          || (linked === pickLinked && distRank(free[i].chain) < distRank(free[pick].chain))) {
+          || (linked === pickLinked && distRank(forestBlocks[i].chain) < distRank(forestBlocks[pick].chain))) {
           pick = i; pickLinked = linked
         }
       }
       taken.add(pick)
-      ordered.push(free[pick])
+      ordered.push(forestBlocks[pick])
     }
-    ordered.forEach((b, i) => { free[i] = b })
+    ordered.forEach((b, i) => { forestBlocks[i] = b })
   }
-  const forest = packBlocks(free, FAMILY_GAP * 2)
-  free.forEach((b, i) => b.place(forest.xs[i]))
+  const forest = packBlocks(forestBlocks, FAMILY_GAP * 2)
+  forestBlocks.forEach((b, i) => b.place(forest.xs[i]))
   let cursor = Math.max(0, ...[...forest.rows.values()].map(v => v[1])) + FAMILY_GAP * 2
 
+  // Insertion en flanc (mode « rooted ») : plutôt que le créneau libre le plus proche —
+  // souvent après toutes les familles collatérales de la lignée qui a revendiqué le
+  // couple, d'où des beaux-parents rejetés loin à droite — le bloc est inséré dans une
+  // bande ouverte juste à côté de la chaîne de son enfant (le couple pour une lignée
+  // alliée), du côté où l'enfant se trouve. Les contenus au-delà de la bande sont
+  // translatés d'un bloc vers l'extérieur, jamais replacés un par un : aucun
+  // chevauchement possible. Renvoie false si l'enfant n'est pas encore placé (repli).
+  const flankEnds = new Map() // chaîne enfant → bornes des flancs déjà insérés de part et d'autre
+  const maxNodeWidth = Math.max(...nodes.map((n) => n.width))
+  const placeFlank = (block) => {
+    const placedKids = block.external.filter(({ kid }) => pos.has(kid))
+    if (!placedKids.length) return false
+    const kid = placedKids[0].kid
+    const kidChain = chainOf.get(kid)
+    let chainL = Infinity, chainR = -Infinity
+    if (kidChain) {
+      for (const id of kidChain) {
+        const x = pos.get(id)
+        if (x == null) continue
+        chainL = Math.min(chainL, x)
+        chainR = Math.max(chainR, x + byId.get(id).width)
+      }
+    }
+    if (!Number.isFinite(chainL)) return false
+    const kidCenter = pos.get(kid) + byId.get(kid).width / 2
+    const flank = flankEnds.get(kidChain) || { left: Infinity, right: -Infinity }
+    const toTheRight = kidCenter > (chainL + chainR) / 2
+    const shift = block.width + FAMILY_GAP * 2 + maxNodeWidth
+    if (toTheRight) {
+      const start = Math.max(chainR, flank.right) + FAMILY_GAP
+      for (const [id, x] of pos) {
+        if (x + byId.get(id).width > start - NODE_SPACING) pos.set(id, x + shift)
+      }
+      block.place(start)
+      flank.right = Math.max(flank.right, start + block.width)
+    } else {
+      const end = Math.min(chainL, flank.left) - FAMILY_GAP
+      for (const [id, x] of pos) {
+        if (x < end + NODE_SPACING) pos.set(id, x - shift)
+      }
+      block.place(end - block.width)
+      flank.left = Math.min(flank.left, end - block.width)
+    }
+    flankEnds.set(kidChain, flank)
+    return true
+  }
+  if (options.rootPersonId != null) {
+    for (const block of freeInLaw) {
+      if (!placeFlank(block)) { block.place(cursor); cursor += block.width + FAMILY_GAP * 2 }
+    }
+  }
+
   // 2) Blocs ancrés : l'union concernée centrée sur son enfant déjà placé, générations
-  // profondes d'abord, puis par proximité avec la racine. En mode « rooted », le créneau
-  // se contente d'un écart de nœud (plus fin) et, à défaut de créneau, le bloc se place
-  // là où il gêne le moins au lieu d'être rejeté loin à droite.
+  // profondes d'abord, puis par proximité avec la racine. En mode « rooted », le bloc est
+  // inséré en flanc de la chaîne de son enfant (placeFlank) ; le repli par créneau ne
+  // concerne plus que le mode par défaut (et les cas sans enfant placé).
   const occupied = (exclude) => {
     const byGen = new Map()
     for (const n of nodes) {
@@ -281,6 +345,7 @@ export function computeBlockLayout(graphData = null, options = {}) {
   }
   anchored.sort((a, b) => b.gen - a.gen || distRank(a.chain) - distRank(b.chain))
   for (const block of anchored) {
+    if (options.rootPersonId != null && placeFlank(block)) continue
     const occ = occupied(block.members)
     const targets = block.external
       .filter(({ kid }) => pos.has(kid))
