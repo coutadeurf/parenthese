@@ -34,6 +34,8 @@ const AdminPanel = ({
   visible,
   treeId,
   authToken,
+  persons = [],
+  onRootPersonChanged,
   onClose,
   onTreeDeleted,
   onGedcomImported,
@@ -48,6 +50,9 @@ const AdminPanel = ({
   const [tree, setTree] = useState(null)
   const [treeName, setTreeName] = useState('')
   const [treeDescription, setTreeDescription] = useState('')
+  // Personne racine configurée : l'affichage « rooted » (?layout=rooted) s'organise autour d'elle.
+  // '' = choix automatique (personne la plus connectée).
+  const [treeRootPersonId, setTreeRootPersonId] = useState('')
   // Contributions de la famille : 'pending' = validées par l'admin, 'direct' = appliquées immédiatement
   const [contributionPolicy, setContributionPolicy] = useState('pending')
   const [savingPolicy, setSavingPolicy] = useState(false)
@@ -114,6 +119,7 @@ const AdminPanel = ({
         setTree(loadedTree)
         setTreeName(loadedTree?.name || '')
         setTreeDescription(loadedTree?.description || '')
+        setTreeRootPersonId(loadedTree?.rootPersonId || '')
       })
       .catch(() => {
         if (!active) return
@@ -167,6 +173,7 @@ const AdminPanel = ({
       const payload = {
         name: nextName,
         description: treeDescription.trim() || null,
+        rootPersonId: treeRootPersonId || null,
       }
 
       const normalized = normalizeSlug(nextName)
@@ -181,6 +188,10 @@ const AdminPanel = ({
       }
 
       const updated = await updateTree(treeId, payload, authToken)
+      // La racine a changé : l'arbre affiché se réorganise autour de la nouvelle personne
+      if ((updated?.rootPersonId || null) !== (tree?.rootPersonId || null)) {
+        await onRootPersonChanged?.()
+      }
       setTree(updated)
       setTreeName(updated?.name || nextName)
       setTreeDescription(updated?.description || '')
@@ -426,6 +437,25 @@ const AdminPanel = ({
                       onChange={(event) => setTreeDescription(event.target.value)}
                       placeholder={t('Quelques mots pour accueillir la famille')}
                     />
+                  </div>
+
+                  <div className="pz-field">
+                    <label htmlFor="settingsTreeRoot">{t('Personne racine')}</label>
+                    <select
+                      id="settingsTreeRoot"
+                      value={treeRootPersonId}
+                      onChange={(event) => setTreeRootPersonId(event.target.value)}
+                    >
+                      <option value="">{t('Choix automatique (personne la plus connectée)')}</option>
+                      {[...persons]
+                        .sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`, 'fr'))
+                        .map((person) => (
+                          <option key={person.id} value={person.id}>
+                            {`${person.firstName || ''} ${person.lastName || ''}`.trim()}
+                          </option>
+                        ))}
+                    </select>
+                    <p className="pz-small">{t("L'affichage « rooted » (?layout=rooted) organise l'arbre autour d'elle.")}</p>
                   </div>
 
                   <div className="ts-actions">
