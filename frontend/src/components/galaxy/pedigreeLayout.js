@@ -1,4 +1,4 @@
-import { computeLayout, chainGap, coupleBarMeta } from './elkLayout'
+import { computeLayout, componentOrderPerGen, chainGap, coupleBarMeta } from './elkLayout'
 import { RENVOI_MIN_DX } from './constants'
 
 // ============================================================
@@ -17,16 +17,23 @@ import { RENVOI_MIN_DX } from './constants'
 //      Une unité d'union = la chaîne de couple contenant l'union
 //      d'ancrage + les boîtes d'ascendance des membres (l'unité des
 //      parents de chaque membre, ancrée au-dessus de lui) + les packs
-//      des enfants non pivots (fratrie du pivot), rangés au-delà des
-//      boîtes, du côté du pivot. Une unité de personne (racine, pack
-//      d'un collatéral) = sa chaîne + les boîtes des conjoints + les
-//      packs de ses enfants centrés sous chaque union.
-//      Les écarts entre membres d'une chaîne s'élargissent pour que
-//      les boîtes d'ascendance voisines ne se chevauchent jamais :
-//      le tiling est exact, aucun chevauchement possible.
+//      des enfants non pivots (fratrie du pivot), rangés au-delà de la
+//      rangée du pivot, du côté du pivot. Une unité de personne (racine,
+//      pack d'un collatéral) = sa chaîne + les boîtes des conjoints +
+//      les lots de ses enfants centrés sous chaque union.
 //   2. Pose descendante depuis la racine (la personne racine à x = 0,
-//      ses parents ancrés au-dessus), puis les composantes déconnectées
-//      au fil d'un curseur à droite de tout.
+//      l'unité de ses parents ancrée au-dessus d'elle), puis les
+//      composantes déconnectées au fil d'un curseur à droite de tout.
+//
+// L'empreinte d'un plan est PAR RANGÉE (Map décalage de génération →
+// [gauche, droite], voir mergeRows) : une boîte n'élargit la chaîne que
+// sur les rangées qu'elle occupe vraiment. Des largeurs scalaires
+// fusionneraient toutes les rangées et doubleraient à chaque génération
+// dès que deux lignées partagent des ancêtres.
+//
+// Les chaînes de couples viennent d'elkLayout (componentOrderPerGen) :
+// l'ordre linéaire personne-union-personne est déjà calculé là, sans
+// doublon, et chainGap donne l'écart entre membres consécutifs.
 //
 // Les générations (Y) et les nœuds viennent de computeLayout ; seul X
 // est recalculé. Les arêtes longues deviennent couloir (saut d'une
@@ -42,15 +49,9 @@ export function computePedigreeLayout(graphData, rootPersonId) {
   const byId = new Map(nodes.map((n) => [n.id, n]))
 
   // --- Structure : partenaires, enfants par union, union parentale par enfant
-  const unionEntry = new Map(coupleBarMeta.map((e) => [e.elkId, e]))
   const orderOfUnion = new Map()
   for (const u of graphData?.unions || []) orderOfUnion.set(`u-${u.id}`, { displayOrder: u.displayOrder, id: u.id })
 
-  const otherPartner = (unionId, personId) => {
-    const e = unionEntry.get(unionId)
-    if (!e) return null
-    return e.p1Key === personId ? e.p2Key : e.p1Key
-  }
   const unionsOf = new Map() // personne -> unions réelles triées
   for (const { elkId, p1Key, p2Key, virtual } of coupleBarMeta) {
     if (virtual) continue
@@ -86,77 +87,59 @@ export function computePedigreeLayout(graphData, rootPersonId) {
   }
   const isUnionNode = (id) => id.startsWith('u-') || id.startsWith('vu-')
 
-  // --- Chaîne de couple contenant une ancre (union ou personne), ancre en tête
-  // des identifiants : [... à gauche ...] puis [... à droite ...]
-  const chainMemo = new Map()
-  const chainOfUnion = (anchorId) => {
-    if (chainMemo.has(anchorId)) return chainMemo.get(anchorId)
-    const e = unionEntry.get(anchorId)
-    const seenU = new Set([anchorId])
-    const seenP = new Set()
-    const left = []
-    const right = []
-    const walkPerson = (pid, list, reverse) => {
-      if (!pid || seenP.has(pid)) return
-      seenP.add(pid)
-      const next = []
-      for (const u of (unionsOf.get(pid) || [])) {
-        if (seenU.has(u)) continue
-        seenU.add(u)
-        const op = otherPartner(u, pid)
-        next.push(u)
-        if (op) next.push(op)
-      }
-      if (reverse) {
-        // à gauche : les unions du partenaire s'éloignent de l'ancre
-        for (let i = next.length - 1; i >= 0; i -= 1) list.push(next[i])
-        list.push(pid)
-      } else {
-        list.push(pid)
-        for (const id of next) list.push(id)
-      }
-      for (let i = 0; i < next.length; i += 2) {
-        walkPerson(next[i + 1], list, reverse)
-      }
+  // --- Chaînes de couples : composantes d'une génération telles qu'elkLayout
+  // les a ordonnées (traverseChain : chaque nœud une fois, alternance
+  // personne-union). Un nœud sans union forme une chaîne seule.
+  const chainOf = new Map() // nœud -> chaîne qui le contient
+  for (const gen of [...componentOrderPerGen.keys()].sort((a, b) => a - b)) {
+    for (const ids of componentOrderPerGen.get(gen)) {
+      for (const id of ids) if (!chainOf.has(id)) chainOf.set(id, ids)
     }
-    if (e?.p2Key) walkPerson(e.p2Key, right, false)
-    if (e?.p1Key) walkPerson(e.p1Key, left, true)
-    const chain = [...left.slice().reverse(), anchorId, ...right]
-    chainMemo.set(anchorId, chain)
-    return chain
   }
-  const chainOfPerson = (personId) => {
-    if (chainMemo.has(personId)) return chainMemo.get(personId)
-    const seenU = new Set()
-    const seenP = new Set([personId])
-    const chain = [personId]
-    const walkPerson = (pid) => {
-      for (const u of (unionsOf.get(pid) || [])) {
-        if (seenU.has(u)) continue
-        seenU.add(u)
-        const op = otherPartner(u, pid)
-        chain.push(u)
-        if (op) {
-          chain.push(op)
-          if (!seenP.has(op)) { seenP.add(op); walkPerson(op) }
-        }
-      }
+  const chainOfNode = (id) => chainOf.get(id) || [id]
+
+  // --- Empreintes par rangée : décalage de génération (relatif à la rangée de
+  // l'ancre du plan) -> [gauche, droite], en coordonnées relatives à l'ancre.
+  const rowUnion = (rows, off, l, r) => {
+    const cur = rows.get(off)
+    rows.set(off, cur ? [Math.min(cur[0], l), Math.max(cur[1], r)] : [l, r])
+  }
+  const mergeRows = (rows, subRows, off, x) => {
+    for (const [o, [l, r]] of subRows) rowUnion(rows, o + off, l + x, r + x)
+  }
+  const rowsExtents = (rows) => {
+    let left = Infinity
+    let right = -Infinity
+    for (const [, [l, r]] of rows) {
+      left = Math.min(left, l)
+      right = Math.max(right, r)
     }
-    walkPerson(personId)
-    chainMemo.set(personId, chain)
-    return chain
+    return { left, right }
   }
+  const rowOf = (rows, off) => rows.get(off) ?? [Infinity, -Infinity]
 
   // --- Plans des unités (mémoïsés, gardés contre les cycles)
-  const planUnion = new Map() // unionId -> plan ancré sur l'union (pivot inclus)
-  const planPerson = new Map() // personId -> plan ancré sur la personne
+  const planUnion = new Map() // `${unionId}|${pivotKid}` -> plan ancré sur l'union
+  const planPerson = new Map() // `${personId}` ou `${personId}|own` -> plan ancré sur la personne
   const visiting = new Set()
 
-  const sideOfIndex = (index, anchorIndex) => (index > anchorIndex || (index === anchorIndex) ? 'right' : 'left')
+  const degeneratePlan = (id) => {
+    const half = (byId.get(id)?.width ?? 0) / 2
+    return { chain: [id], pos: [0], boxes: [null], kidPacks: [], anchorIndex: 0, left: -half, right: half, chainLeft: -half, chainRight: half, rows: new Map([[0, [-half, half]]]) }
+  }
+
+  const sideOfIndex = (index, anchorIndex) => (index >= anchorIndex ? 'right' : 'left')
+  // Côté intrinsèque d'un membre dans sa chaîne : au-delà du bout où il se
+  // trouve. Indépendant de l'ancre du plan — deux plans de la même chaîne
+  // (la racine et son conjoint) doivent largeur pour largeur poser les
+  // mêmes packs au même endroit.
+  const intrinsicSide = (index, length) => (2 * index >= length - 1 ? 'right' : 'left')
 
   // Positionne les membres d'une chaîne autour de son ancre ; les écarts
-  // s'élargissent pour que les boîtes d'ascendance centrées sur les membres
-  // ne se chevauchent pas (balayage gauche-droite).
+  // s'élargissent pour que les boîtes d'ascendance ne se chevauchent pas,
+  // mais seulement sur les rangées qu'elles occupent réellement (les
+  // rangées d'une boîte sont décalées de -1 : la barre d'union des
+  // parents se pose à la verticale du membre, une rangée au-dessus).
   const layoutChain = (chain, anchorIndex, boxes) => {
     const pos = []
     for (let i = 0; i < chain.length; i += 1) {
@@ -168,123 +151,153 @@ export function computePedigreeLayout(graphData, rootPersonId) {
         pos[i] = pos[i - 1] + byId.get(chain[i - 1]).width / 2 + gap + w / 2
       }
     }
-    let prevBoxRight = -Infinity
+    const prevRight = new Map() // décalage rangée -> bord droit déjà posé
     for (let i = 0; i < chain.length; i += 1) {
+      const half = byId.get(chain[i]).width / 2
+      // le membre borne sa propre rangée : les packs d'une boîte (rangée du
+      // pivot, décalée en 0 ici) ne passent pas sur les membres posés avant
+      prevRight.set(0, Math.max(prevRight.get(0) ?? -Infinity, pos[i] + half))
       const box = boxes[i]
       if (!box) continue
-      const needLeft = pos[i] - box.left
-      if (needLeft < prevBoxRight + NODE_SPACING) {
-        const shift = prevBoxRight + NODE_SPACING - needLeft
-        for (let j = i; j < chain.length; j += 1) pos[j] += shift
+      let shift = 0
+      for (const [off, [l]] of box.rows) {
+        const needLeft = pos[i] + l
+        const prev = prevRight.get(off - 1) ?? -Infinity
+        if (needLeft < prev + NODE_SPACING) shift = Math.max(shift, prev + NODE_SPACING - needLeft)
       }
-      if (chain.includes("u-u_parents_pere")) console.log(`sweep ${chain[i]} pos=${Math.round(pos[i])} box=${box ? Math.round(box.left)+"/"+Math.round(box.right) : "null"} prev=${Math.round(prevBoxRight)}`)
-      prevBoxRight = Math.max(prevBoxRight, pos[i] + box.right)
+      if (shift > 0) for (let j = i; j < chain.length; j += 1) pos[j] += shift
+      for (const [off, [, r]] of box.rows) {
+        prevRight.set(off - 1, Math.max(prevRight.get(off - 1) ?? -Infinity, pos[i] + r))
+      }
     }
     const anchorX = pos[anchorIndex]
     for (let i = 0; i < chain.length; i += 1) pos[i] -= anchorX
     return pos
   }
 
-  const chainExtents = (chain, pos, boxes) => {
-    let left = Infinity
-    let right = -Infinity
+  // Plan d'une unité de personne (la racine ou un pack de collatéral) :
+  // sa chaîne, les boîtes des conjoints, les lots de ses enfants centrés
+  // sous chaque union de la chaîne. Avec « own », la boîte des parents de
+  // l'ancre (l'unité posée au-dessus d'elle) fait partie du plan : c'est le
+  // cas de la racine et des têtes de composantes déconnectées, qui n'ont pas
+  // d'unité appelante pour la réserver.
+  const buildPersonUnit = (personId, own = false) => {
+    const memoKey = own ? `${personId}|own` : personId
+    if (planPerson.has(memoKey)) return planPerson.get(memoKey)
+    if (visiting.has(personId)) return degeneratePlan(personId)
+    visiting.add(personId)
+    const chain = chainOfNode(personId)
+    const anchorIndex = chain.indexOf(personId)
+    // Une même union parentale n'est revendiquée qu'une fois : deux membres
+    // de la chaîne frères ou sœurs partagent leurs ancêtres, posés une fois.
+    const boxUnionSeen = new Set()
+    const boxes = chain.map((id, i) => {
+      if (i === anchorIndex && !own) return null
+      if (isUnionNode(id)) return null
+      const link = parentLinkOf.get(id)
+      if (!link || boxUnionSeen.has(link)) return null
+      boxUnionSeen.add(link)
+      return buildUnionUnit(link, id, intrinsicSide(i, chain.length))
+    })
+    const pos = layoutChain(chain, anchorIndex, boxes)
+    const rows = new Map()
     for (let i = 0; i < chain.length; i += 1) {
       const half = byId.get(chain[i]).width / 2
-      left = Math.min(left, pos[i] - half, boxes[i] ? pos[i] - boxes[i].left : Infinity)
-      right = Math.max(right, pos[i] + half, boxes[i] ? pos[i] + boxes[i].right : -Infinity)
+      rowUnion(rows, 0, pos[i] - half, pos[i] + half)
+      if (boxes[i]) mergeRows(rows, boxes[i].rows, -1, pos[i])
     }
-    return { left, right }
-  }
-
-  // Plan d'une unité de personne (la racine ou un pack de collatéral) :
-  // sa chaîne, les boîtes des conjoints, les packs des enfants centrés
-  // sous chaque union de la chaîne.
-  const buildPersonUnit = (personId) => {
-    if (planPerson.has(personId)) return planPerson.get(personId)
-    if (visiting.has(personId)) return { chain: [personId], pos: [0], boxes: [null], kidPacks: [], left: 0, right: 0 }
-    visiting.add(personId)
-    const chain = chainOfPerson(personId)
-    const boxes = chain.map((id, i) => {
-      if (i === 0 || isUnionNode(id)) return null
-      const link = parentLinkOf.get(id)
-      if (!link) return null
-      return buildUnionUnit(link, id, sideOfIndex(i, 0))
-    })
-    const pos = layoutChain(chain, 0, boxes)
-    const { left: chainLeft, right: chainRight } = chainExtents(chain, pos, boxes)
-    const kidPacks = [] // { kid, x0 } : cible relative à l'ancre (la personne)
-    let minLeft = chainLeft
-    let maxRight = chainRight
+    const [chainLeft, chainRight] = rowOf(rows, 0)
+    // Lots d'enfants : centrés sous chaque union de la chaîne, côte à côte
+    // sans se chevaucher (les lots sont des sous-arbres disjoints : leur
+    // largeur pleine suffit pour les ranger).
+    const kidPacks = [] // { kid, x0 } : ancre du lot, relative à l'ancre (la personne)
+    let prevLotRight = -Infinity
     for (let i = 0; i < chain.length; i += 1) {
       if (!isUnionNode(chain[i])) continue
       const kids = (childrenOf.get(chain[i]) || []).slice().sort(kidOrder)
+      if (!kids.length) continue
       const exts = kids.map((k) => buildPersonUnit(k))
-      const total = exts.reduce((s, p) => s + p.left + p.right, 0) + Math.max(0, kids.length - 1) * FAMILY_GAP
-      let x = pos[i] - total / 2
+      const packsW = exts.reduce((s, p) => s + p.right - p.left, 0) + Math.max(0, kids.length - 1) * FAMILY_GAP
+      let x = Math.max(pos[i] - packsW / 2, prevLotRight + FAMILY_GAP)
       for (let j = 0; j < kids.length; j += 1) {
         const p = exts[j]
-        kidPacks.push({ kid: kids[j], x0: x + p.left })
-        x += p.left + p.right + FAMILY_GAP
+        kidPacks.push({ kid: kids[j], x0: x - p.left })
+        mergeRows(rows, p.rows, 1, x - p.left)
+        x += p.right - p.left + FAMILY_GAP
       }
-      if (kids.length) {
-        minLeft = Math.min(minLeft, pos[i] - total / 2)
-        maxRight = Math.max(maxRight, pos[i] + total / 2)
-      }
+      prevLotRight = x - FAMILY_GAP
     }
-    const plan = { chain, pos, boxes, kidPacks, left: minLeft, right: maxRight }
+    const { left, right } = rowsExtents(rows)
+    const plan = { chain, pos, boxes, kidPacks, anchorIndex, left, right, chainLeft, chainRight, rows }
     visiting.delete(personId)
-    planPerson.set(personId, plan)
+    planPerson.set(memoKey, plan)
     return plan
   }
 
   // Plan d'une unité d'union (les parents du pivot) : la chaîne contenant
   // l'union d'ancrage, les boîtes d'ascendance des membres, et les packs des
-  // enfants non pivots rangés au-delà des boîtes, du côté du pivot.
+  // enfants non pivots rangés au-delà de la rangée du pivot, du côté du
+  // pivot. Le plan dépend du pivot (les packs évitent la rangée du pivot) :
+  // la clé de mémo inclut le pivot.
   const buildUnionUnit = (unionId, pivotKid, packSide) => {
-    if (planUnion.has(unionId)) return planUnion.get(unionId)
-    if (visiting.has(unionId)) {
-      return { chain: [unionId], pos: [0], boxes: [null], kidPacks: [], left: 0, right: 0 }
-    }
+    const memoKey = `${unionId}|${pivotKid ?? ''}`
+    if (planUnion.has(memoKey)) return planUnion.get(memoKey)
+    if (visiting.has(unionId)) return degeneratePlan(unionId)
     visiting.add(unionId)
-    const chain = chainOfUnion(unionId)
+    const chain = chainOfNode(unionId)
     const anchorIndex = chain.indexOf(unionId)
-    const boxes = chain.map((id) => {
+    const chainSet = new Set(chain)
+    const boxUnionSeen = new Set()
+    const boxes = chain.map((id, i) => {
       if (isUnionNode(id)) return null
       const link = parentLinkOf.get(id)
-      if (!link) return null
-      return buildUnionUnit(link, id, sideOfIndex(chain.indexOf(id), anchorIndex))
+      if (!link || boxUnionSeen.has(link)) return null
+      boxUnionSeen.add(link)
+      return buildUnionUnit(link, id, intrinsicSide(i, chain.length))
     })
     const pos = layoutChain(chain, anchorIndex, boxes)
-    const { left, right } = chainExtents(chain, pos, boxes)
-    // Enfants non pivots des unions de la chaîne, du côté du pivot (ou du
-    // côté de leur union dans la chaîne), au-delà des boîtes.
+    const rows = new Map()
+    for (let i = 0; i < chain.length; i += 1) {
+      const half = byId.get(chain[i]).width / 2
+      rowUnion(rows, 0, pos[i] - half, pos[i] + half)
+      if (boxes[i]) mergeRows(rows, boxes[i].rows, -1, pos[i])
+    }
+    const [chainLeft, chainRight] = rowOf(rows, 0)
+    // Les packs latéraux se rangent au rang du pivot : ils partent au-delà
+    // de la rangée du pivot (sa chaîne), pas au-delà de tout son plan —
+    // les descendants du pivot vivent sur d'autres rangées, réservées par
+    // les plans qui les contiennent.
+    const pivotPlan = pivotKid != null ? buildPersonUnit(pivotKid) : null
+    let leftCursor = pivotPlan ? Math.min(chainLeft, pivotPlan.chainLeft) : chainLeft
+    let rightCursor = pivotPlan ? Math.max(chainRight, pivotPlan.chainRight) : chainRight
     const kidPacks = []
-    let leftCursor = left
-    let rightCursor = right
     const sideLists = { left: [], right: [] }
     for (let i = 0; i < chain.length; i += 1) {
       if (!isUnionNode(chain[i])) continue
       const side = i === anchorIndex ? packSide : sideOfIndex(i, anchorIndex)
       for (const kid of (childrenOf.get(chain[i]) || []).slice().sort(kidOrder)) {
-        if (kid === pivotKid) continue
+        // le pivot est ancré par l'appelant ; un enfant déjà membre de la
+        // chaîne (deux sœurs mariées dans la même chaîne) est posé par elle
+        if (kid === pivotKid || chainSet.has(kid)) continue
         sideLists[side].push(kid)
       }
     }
     for (const kid of sideLists.right) {
       const p = buildPersonUnit(kid)
-      rightCursor += FAMILY_GAP + p.left
-      kidPacks.push({ kid, x0: rightCursor })
-      rightCursor += p.right
+      kidPacks.push({ kid, x0: rightCursor + FAMILY_GAP - p.left })
+      mergeRows(rows, p.rows, 1, rightCursor + FAMILY_GAP - p.left)
+      rightCursor += FAMILY_GAP + (p.right - p.left)
     }
     for (const kid of [...sideLists.left].reverse()) {
       const p = buildPersonUnit(kid)
-      leftCursor -= FAMILY_GAP + p.left
-      kidPacks.push({ kid, x0: leftCursor })
-      leftCursor -= p.right
+      leftCursor -= FAMILY_GAP + (p.right - p.left)
+      kidPacks.push({ kid, x0: leftCursor - p.left })
+      mergeRows(rows, p.rows, 1, leftCursor - p.left)
     }
-    const plan = { chain, pos, boxes, kidPacks, left: leftCursor, right: rightCursor, membersSide: chain.map((id, i) => sideOfIndex(i, anchorIndex)) }
+    const { left, right } = rowsExtents(rows)
+    const plan = { chain, pos, boxes, kidPacks, anchorIndex, left, right, chainLeft, chainRight, rows }
     visiting.delete(unionId)
-    planUnion.set(unionId, plan)
+    planUnion.set(memoKey, plan)
     return plan
   }
 
@@ -296,42 +309,46 @@ export function computePedigreeLayout(graphData, rootPersonId) {
     const plan = buildUnionUnit(unionId, pivotKid, packSide)
     if (placedUnits.has(unionId)) return
     placedUnits.add(unionId)
-    const anchorIndex = plan.chain.indexOf(unionId)
     for (let i = 0; i < plan.chain.length; i += 1) {
       xOf.set(plan.chain[i], x + plan.pos[i])
       const id = plan.chain[i]
       if (!isUnionNode(id)) {
         const link = parentLinkOf.get(id)
-        if (link) placeUnionUnit(link, x + plan.pos[i], id, sideOfIndex(i, anchorIndex))
+        if (link) placeUnionUnit(link, x + plan.pos[i], id, intrinsicSide(i, plan.chain.length))
       }
     }
     for (const { kid, x0 } of plan.kidPacks) placePersonUnit(kid, x + x0)
   }
 
-  const placePersonUnit = (personId, x) => {
-    const plan = buildPersonUnit(personId)
+  const placePersonUnit = (personId, x, own = false) => {
+    const plan = buildPersonUnit(personId, own)
     if (placedUnits.has(personId)) return
     placedUnits.add(personId)
     for (let i = 0; i < plan.chain.length; i += 1) {
       xOf.set(plan.chain[i], x + plan.pos[i])
       const id = plan.chain[i]
-      // Le parent de l'ancre est posé par l'appelant (l'unité qui a engendré
-      // ce pack) — jamais ici ; celui des conjoints, si.
-      if (i !== 0 && !isUnionNode(id)) {
+      // Le parent de l'ancre est posé par l'unité qui a engendré ce pack —
+      // ou par le bloc « own » ci-dessous ; celui des conjoints, ici.
+      if (!isUnionNode(id) && i !== plan.anchorIndex) {
         const link = parentLinkOf.get(id)
-        if (link) placeUnionUnit(link, x + plan.pos[i], id, sideOfIndex(i, 0))
+        if (link) placeUnionUnit(link, x + plan.pos[i], id, intrinsicSide(i, plan.chain.length))
       }
+    }
+    if (own) {
+      const link = parentLinkOf.get(personId)
+      if (link) placeUnionUnit(link, x, personId, intrinsicSide(plan.anchorIndex, plan.chain.length))
     }
     for (const { kid, x0 } of plan.kidPacks) placePersonUnit(kid, x + x0)
   }
 
-  // Racine : sa chaîne à x = 0, ses parents ancrés au-dessus d'elle.
+  // Racine : sa chaîne à x = 0, l'unité de ses parents ancrée au-dessus d'elle.
   const rootKey = `p-${rootPersonId}`
-  placePersonUnit(rootKey, 0)
-  const rootParentLink = parentLinkOf.get(rootKey)
-  if (rootParentLink) placeUnionUnit(rootParentLink, 0, rootKey, 'right')
+  placePersonUnit(rootKey, 0, true)
 
-  // --- Restes : composantes déconnectées, au fil d'un curseur à droite de tout
+  // --- Restes : composantes déconnectées, au fil d'un curseur à droite de tout.
+  // La tête de composante est posée avec sa boîte de parents (« own ») pour que
+  // le curseur tienne compte de ses bornes réelles, et son bord gauche tombe
+  // exactement sur le curseur (ancre = curseur - plan.left).
   let maxX = 0
   for (const x of xOf.values()) maxX = Math.max(maxX, x)
   let cursor = maxX + FAMILY_GAP * 2
@@ -345,9 +362,9 @@ export function computePedigreeLayout(graphData, rootPersonId) {
     })
   for (const id of personIds) {
     if (xOf.has(id)) continue
-    const plan = buildPersonUnit(id)
+    const plan = buildPersonUnit(id, true)
     if (xOf.has(id)) continue
-    placePersonUnit(id, cursor + Math.max(0, -plan.left))
+    placePersonUnit(id, cursor - plan.left, true)
     for (const x of xOf.values()) cursor = Math.max(cursor, x)
     cursor += FAMILY_GAP * 2
   }
