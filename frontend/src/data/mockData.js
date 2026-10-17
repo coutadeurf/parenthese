@@ -102,6 +102,7 @@ function mapRemotePersonToLocal(person, current = null) {
     id: person?.id ?? current?.id,
     firstName: person?.firstName || current?.firstName || t('Inconnu'),
     lastName: person?.lastName || current?.lastName || '',
+    sex: person?.sex ?? current?.sex ?? null,
     birthName: person?.birthName ?? current?.birthName ?? null,
     birthYear,
     birthDate: person?.birthDate || current?.birthDate || null,
