@@ -71,6 +71,8 @@
 .pc-life { margin: 0; font: 400 13.5px/1.4 var(--pz-sans); color: var(--pz-muted); }
 .pc-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .pc-chips:empty { display: none; }
+/* Mode Ascendance : « Voir l'ascendance de cette personne » sous l'en-tête */
+.pc-ascendance { margin: 10px 0 2px; }
 /* Place dans la fratrie (mode édition) : ‹ 2 sur 3 › dans une pastille */
 .pz-tag.pc-order { gap: 0; padding: 1px; }
 .pc-order-label { padding: 0 1px; font-variant-numeric: tabular-nums; }

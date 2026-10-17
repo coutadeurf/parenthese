@@ -52,7 +52,7 @@ const AdminPanel = ({
   const [tree, setTree] = useState(null)
   const [treeName, setTreeName] = useState('')
   const [treeDescription, setTreeDescription] = useState('')
-  // Personne racine configurée : l'affichage « rooted » (?layout=rooted) s'organise autour d'elle.
+  // Personne racine configurée : le mode « Ascendance » s'organise autour d'elle.
   // '' = choix automatique (personne la plus connectée).
   const [treeRootPersonId, setTreeRootPersonId] = useState('')
   // Contributions de la famille : 'pending' = validées par l'admin, 'direct' = appliquées immédiatement
@@ -457,7 +457,7 @@ const AdminPanel = ({
                           </option>
                         ))}
                     </select>
-                    <p className="pz-small">{t("L'affichage « rooted » (?layout=rooted) organise l'arbre autour d'elle.")}</p>
+                    <p className="pz-small">{t("Le mode « Ascendance » organise l'arbre autour d'elle.")}</p>
                   </div>
 
                   <div className="ts-actions">

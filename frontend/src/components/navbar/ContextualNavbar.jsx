@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import {
   Edit3, Share2, User, UserPlus,
   X, MousePointer2, Pencil, Type, Star, Trash2, Image, ImagePlus, MoreHorizontal, HelpCircle, Globe,
+  ArrowUpToLine, ArrowDownToLine,
 } from 'lucide-react'
 import NavButton from './NavButton'
 import AvatarMenu from './AvatarMenu'
@@ -44,6 +45,8 @@ function ContextualNavbar({
   onSettingsClick,
   onLogout,
   annotationTools = null,
+  viewMode = 'descendance',
+  onViewModeChange = null,
 }) {
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false)
   const [annotPanel, setAnnotPanel] = useState(null)
@@ -133,6 +136,25 @@ function ContextualNavbar({
 
   // Famille arrivée par le lien : les deux gestes utiles écrits en toutes lettres, le reste dans « Plus »
   const isFamily = (navbarType === 'contributor_anon' || navbarType === 'contributor_auth') && Boolean(onAddSouvenirClick)
+
+  // Sélecteur de mode d'affichage : descendance (arbre entier) ou ascendance (ancêtres de la racine)
+  const renderViewModeSwitch = () => (
+    <div className="nav-mode-switch" role="group" aria-label={t('Mode d’affichage')}>
+      <NavButton
+        icon={<ArrowDownToLine size={20} strokeWidth={2} aria-hidden="true" />}
+        label={t('Mode descendance')}
+        onClick={() => onViewModeChange?.('descendance')}
+        active={viewMode === 'descendance'}
+      />
+      <NavButton
+        icon={<ArrowUpToLine size={20} strokeWidth={2} aria-hidden="true" />}
+        label={t('Mode ascendance')}
+        onClick={() => onViewModeChange?.('ascendance')}
+        active={viewMode === 'ascendance'}
+      />
+    </div>
+  )
+
   const renderFamilyButtons = () => (
     <>
       <button type="button" className="nav-family-btn nav-family-btn--primary" onClick={onAddSouvenirClick}>
@@ -154,6 +176,14 @@ function ContextualNavbar({
               <Pencil size={18} strokeWidth={2} aria-hidden="true" />
               {t("Dessiner ou écrire sur l'arbre")}
             </button>
+            {onViewModeChange && (
+              <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onViewModeChange(viewMode === 'ascendance' ? 'descendance' : 'ascendance') }}>
+                {viewMode === 'ascendance'
+                  ? <ArrowDownToLine size={18} strokeWidth={2} aria-hidden="true" />
+                  : <ArrowUpToLine size={18} strokeWidth={2} aria-hidden="true" />}
+                {viewMode === 'ascendance' ? t('Mode descendance') : t('Mode ascendance')}
+              </button>
+            )}
             {helpUrl && (
               <a role="menuitem" href={helpUrl} target="_blank" rel="noopener" onClick={() => setMoreOpen(false)}>
                 <HelpCircle size={18} strokeWidth={2} aria-hidden="true" />
@@ -394,6 +424,7 @@ function ContextualNavbar({
           </>
         ) : (
           <>
+            {onViewModeChange && renderViewModeSwitch()}
             {isFamily && !editModeActive ? renderFamilyButtons() : renderButtons()}
 
             {/* Hors connexion, pas de menu du compte : le choix de la langue vit dans la barre (ou dans « Plus » pour la famille) */}

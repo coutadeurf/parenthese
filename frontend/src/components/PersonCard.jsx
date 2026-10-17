@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect, useRef, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Save, Trash2, Plus, X, Search, Check, Play, ImagePlus, Sparkles, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Save, Trash2, Plus, X, Search, Check, Play, ImagePlus, Sparkles, ChevronLeft, ChevronRight, ArrowUpToLine } from 'lucide-react'
 import { getParents, getChildren, getPersonUnions, getPersonMedias, filiations, persons, unions } from '../data/mockData'
 import { fetchImmichConfig } from '../api/immichApi.js'
 import GeoMediaThumbnail from './GeoMediaThumbnail'
@@ -54,6 +54,7 @@ const PersonCard = ({
   relationActionError = '',
   siblingPlace = null,
   onMoveSibling,
+  onShowAscendance,
 }) => {
   // Souvenirs d'abord quand il y en a, ou quand on peut en ajouter : c'est là qu'est le bouton
   const [tab, setTab] = useState(() => (getPersonMedias(person.id).length > 0 || canManageMedia ? 'medias' : 'infos'))
@@ -490,6 +491,14 @@ const PersonCard = ({
           </div>
         </div>
       </header>
+
+      {/* Mode Ascendance : recenter la vue sur les ancêtres de cette personne */}
+      {onShowAscendance && (
+        <button type="button" className="pz-btn pz-btn--ghost pz-btn--sm pc-ascendance" onClick={() => onShowAscendance(person.id)}>
+          <ArrowUpToLine size={15} strokeWidth={2} aria-hidden="true" />
+          {t('Voir l’ascendance de cette personne')}
+        </button>
+      )}
 
       {avatarActionError && <div className="pz-error pc-inline-msg">{avatarActionError}</div>}
 

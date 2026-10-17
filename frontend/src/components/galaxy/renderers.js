@@ -138,7 +138,7 @@ function traceFiliation(ctx, sourceId, sourcePos, targetPos, childR, progress) {
 // Courbes de couple (Bézier)
 // ============================================================
 export function drawCoupleLinks(ctx, coupleBarMeta, posMap, nodeMap, nodeRandomData, entrance, entranceActive, elapsed, view = null) {
-  coupleBarMeta.forEach(({ elkId, p1Key, p2Key, virtual }) => {
+  coupleBarMeta.forEach(({ elkId, p1Key, p2Key, virtual, secondary }) => {
     const p1Pos = posMap.get(p1Key)
     const p2Pos = posMap.get(p2Key)
     const unionPos = posMap.get(elkId)
@@ -167,9 +167,12 @@ export function drawCoupleLinks(ctx, coupleBarMeta, posMap, nodeMap, nodeRandomD
       p1PosKeyed, p2PosKeyed, unionPos, p1R, p2R, nodeRandomData, nodeMap.get(elkId)?._compact
     )
 
-    ctx.strokeStyle = virtual ? COLORS.linkUnknown : FIL.color
+    // Union secondaire (mode Ascendance : remariage, fratrie collatérale) : pointillés gris,
+    // comme une union vers un parent inconnu, pour rester distincte de la lignée directe
+    const dashed = virtual || secondary
+    ctx.strokeStyle = dashed ? COLORS.linkUnknown : FIL.color
     ctx.lineWidth = FIL.width
-    ctx.setLineDash(virtual ? [4, 4] : [])
+    ctx.setLineDash(dashed ? [4, 4] : [])
     ctx.lineCap = 'round'
     ctx.globalAlpha = coupleProgress
 
@@ -272,7 +275,12 @@ export function drawFiliations(ctx, edges, posMap, nodeMap, nodeRandomData, entr
     const targetNode = nodeMap.get(targetId)
     const pType = edge._parentageType || 'biologique'
 
-    if (pType === 'adoption') {
+    // Lien secondaire (mode Ascendance : branche collatérale hors lignée directe) :
+    // pointillés gris, distincts de la filiation principale (trait plein terracotta)
+    if (edge._secondary) {
+      ctx.setLineDash([5, 5])
+      ctx.strokeStyle = COLORS.linkUnknown
+    } else if (pType === 'adoption') {
       ctx.setLineDash([8, 5])
       ctx.strokeStyle = FIL.color
     } else if (pType === 'inconnu') {
@@ -567,6 +575,19 @@ function drawPersonNode(ctx, node, pos, nodeProgress, {
   drawFrame(ctx, frameType, person, img, photoHint && !img ? hs : 0)
   ctx.restore()
 
+  // --- Personne racine du mode Ascendance : anneau terracotta autour du portrait ---
+  if (node._ascendanceRoot) {
+    ctx.save()
+    ctx.globalAlpha = nodeProgress
+    ctx.strokeStyle = COLORS.borderAlive
+    ctx.lineWidth = 2.5
+    ctx.setLineDash([])
+    ctx.beginPath()
+    ctx.arc(cx, cy, R + 8, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+  }
+
   // --- Labels (estompés puis absents en dézoom) ---
   if (labelAlpha <= 0) return
   const labelRot = rd?.labelRotation || 0
@@ -617,6 +638,23 @@ function drawPersonNode(ctx, node, pos, nodeProgress, {
     const birthYearLabel = person.birthYear ?? '-'
     const years = person.deathYear ? `${birthYearLabel}–${person.deathYear}` : `${birthYearLabel}`
     ctx.fillText(years, 0, 15)
+
+    // Pastille « Racine » sous les années : repère stable de la vue Ascendance
+    if (node._ascendanceRoot) {
+      ctx.font = '500 10px "DM Sans", system-ui, sans-serif'
+      const badgeText = t('Racine')
+      const badgeW = measureTextCached(ctx, badgeText, 'rootBadge').width + 16
+      const badgeH = 16
+      ctx.fillStyle = '#FCF3EF'
+      ctx.strokeStyle = '#EDB6A4'
+      ctx.lineWidth = 0.75
+      ctx.beginPath()
+      ctx.roundRect(-badgeW / 2, 24, badgeW, badgeH, badgeH / 2)
+      ctx.fill()
+      ctx.stroke()
+      ctx.fillStyle = '#93402A'
+      ctx.fillText(badgeText, 0, 24 + badgeH / 2 + 0.5)
+    }
   }
 
   ctx.restore()

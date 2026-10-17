@@ -101,7 +101,7 @@ export default {
   "Quelques mots pour accueillir la famille": "A few words to welcome the family",
   "Personne racine": "Root person",
   "Choix automatique (personne la plus connectée)": "Automatic (most connected person)",
-  "L'affichage « rooted » (?layout=rooted) organise l'arbre autour d'elle.": "The “rooted” view (?layout=rooted) organizes the tree around this person.",
+  "Le mode « Ascendance » organise l'arbre autour d'elle.": "The “Ancestry” view organizes the tree around this person.",
   "Enregistrement en cours": "Saving",
   "Enregistrer": "Save",
   "Contributions de la famille": "Family contributions",

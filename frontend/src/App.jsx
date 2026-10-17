@@ -1191,6 +1191,32 @@ function App() {
     const personId = tree.selectedPerson?.id
     setSiblingPlace(personId != null && canReorderSiblings ? galaxyZoomApiRef.current?.getSiblingPlace?.(personId) ?? null : null)
   }, [tree.selectedPerson?.id, canReorderSiblings, siblingOrderRevision, tree.graphRevision])
+
+  // Mode d'affichage de l'arbre : 'descendance' (arbre entier) ou 'ascendance' (ancêtres de la
+  // personne racine). ?layout=rooted force l'ascendance ; sinon le choix mémorisé sur l'appareil
+  // gagne (convention de persistance pz-*, comme la langue).
+  const [viewMode, setViewMode] = useState(() => {
+    if (typeof window === 'undefined') return 'descendance'
+    const fromUrl = new URLSearchParams(window.location.search).get('layout')
+    if (fromUrl === 'rooted') return 'ascendance'
+    try {
+      const stored = window.localStorage.getItem('pz-view-mode')
+      if (stored === 'ascendance' || stored === 'descendance') return stored
+    } catch { /* stockage indisponible : mode par défaut */ }
+    return 'descendance'
+  })
+  // Racine de session du mode ascendance (bouton « Voir l'ascendance de cette personne »)
+  const [ascendanceRootId, setAscendanceRootId] = useState(null)
+  const handleViewModeChange = useCallback((mode) => {
+    setViewMode(mode)
+    try { window.localStorage.setItem('pz-view-mode', mode) } catch { /* stockage indisponible */ }
+    trackAppEvent('view_mode_changed', { mode })
+  }, [])
+  const handleShowAscendance = useCallback((personId) => {
+    setAscendanceRootId(personId ?? null)
+  }, [])
+  // La racine de session est propre à l'arbre ouvert
+  useEffect(() => { setAscendanceRootId(null) }, [tree.treeContext.treeId])
   useEffect(() => {
     if (!draftNotice) return undefined
     const timer = setTimeout(() => setDraftNotice(''), 4500)
@@ -2931,12 +2957,16 @@ function App() {
           isOverTrash: annot.isOverTrash,
           onPhotoFileSelected: handleAnnotationPhotoFile,
         } : null}
+        viewMode={viewMode}
+        onViewModeChange={handleViewModeChange}
       />
       <Galaxy
         onPersonSelect={handlePersonSelect}
         onMediaSelect={handleMediaSelectFresh}
         selectedPersonId={tree.selectedPerson?.id || null}
         searchHighlightIds={search.matchedPersonIds}
+        layoutMode={viewMode}
+        ascendanceRootId={ascendanceRootId}
         graphRevision={tree.graphRevision}
         annotationHandlers={editMode.isActive ? annot : null}
         transformReadRef={galaxyTransformReadRef}
@@ -2973,6 +3003,7 @@ function App() {
           relationActionError={relationFeedback.error}
           siblingPlace={siblingPlace}
           onMoveSibling={(delta) => galaxyZoomApiRef.current?.moveSibling?.(tree.selectedPerson.id, delta)}
+          onShowAscendance={viewMode === 'ascendance' ? handleShowAscendance : undefined}
         />
       )}
       {tree.selectedMedia && (

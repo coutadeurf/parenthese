@@ -5,6 +5,13 @@ export default {
   'Voir {firstName}': 'See {firstName}',
   'Voir l’enfant': 'See child',
   'Inconnu': 'Unknown',
+  'Racine': 'Root',
+
+  // Mode Ascendance (components/galaxy/ascendanceLayout.js, navbar, fiche personne)
+  'Mode d’affichage': 'Display mode',
+  'Mode descendance': 'Descendants view',
+  'Mode ascendance': 'Ancestry view',
+  'Voir l’ascendance de cette personne': 'Show this person’s ancestry',
 
   // Lien de parenté affiché au survol (components/galaxy/pathfinding.js)
   'Conjoint(e)': 'Spouse',

@@ -33,6 +33,14 @@
   margin-left: 4px;
 }
 
+/* Sélecteur de mode d'affichage (descendance / ascendance) */
+.nav-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+}
+
 /* Avatar du compte */
 .nav-avatar {
   width: 44px;

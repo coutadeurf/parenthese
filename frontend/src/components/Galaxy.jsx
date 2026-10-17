@@ -4,6 +4,7 @@ import { PERSON_R, FLOAT_SPEED, FLOAT_AMPLITUDE, REPULSION_RADIUS, REPULSION_STR
 import { easeOutCubic } from './galaxy/utils'
 import { computeLayout, generateNodeRandomData, coupleBarMeta } from './galaxy/elkLayout'
 import { computeBlockLayout } from './galaxy/blockLayout'
+import { computeAscendanceLayout } from './galaxy/ascendanceLayout'
 
 // Placement par blocs familiaux par défaut (mesures : tools/layout-bench). ?layout=sugiyama = placement Sugiyama.
 const USE_BLOCK_LAYOUT = typeof window === 'undefined' || new URLSearchParams(window.location.search).get('layout') !== 'sugiyama'
@@ -40,12 +41,19 @@ const DROP_SPRING = { stiffness: 480, dampingRatio: 0.72 }
 const centerX = (node) => node.x + node.width / 2
 const prefersReducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
-const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlightIds = [], graphRevision = 0, annotationHandlers = null, transformReadRef = null, zoomApiRef = null, focusPersonId = null, assetRevision = 0, photoHint = false, reorderEnabled = false, onReorderSiblings = null }) => {
+const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlightIds = [], graphRevision = 0, annotationHandlers = null, transformReadRef = null, zoomApiRef = null, focusPersonId = null, assetRevision = 0, photoHint = false, reorderEnabled = false, onReorderSiblings = null, layoutMode = 'descendance', ascendanceRootId = null }) => {
   const canvasRef = useRef(null)
   // Lu au calcul du cadrage seulement : changer de personne de départ ne recadre pas une vue en cours
   const focusPersonIdRef = useRef(focusPersonId)
   // Mis à jour hors du rendu, avant l'effet de cadrage déclaré plus bas (même phase, ordre de déclaration)
   useEffect(() => { focusPersonIdRef.current = focusPersonId }, [focusPersonId])
+  // Mode d'affichage ('descendance' | 'ascendance') et racine résolue du placement en cours
+  const layoutModeRef = useRef(layoutMode)
+  useEffect(() => { layoutModeRef.current = layoutMode }, [layoutMode])
+  const ascendanceRootRef = useRef(null)
+  // Synchronisé ici (avant l'effet de layout) : la sélection sert de racine par défaut en mode Ascendance
+  const selectedPersonIdRef = useRef(null)
+  useEffect(() => { selectedPersonIdRef.current = selectedPersonId }, [selectedPersonId])
   // Propriétaire : un portrait vide survolé montre « + photo »
   const photoHintRef = useRef(photoHint)
   useEffect(() => { photoHintRef.current = photoHint }, [photoHint])
@@ -67,7 +75,6 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
   const mediaHoverState = useRef(new Map())
   const dragLiftProgress = useRef(0)
   const entranceRef = useRef(null)
-  const selectedPersonIdRef = useRef(null)
   const selectedGlowScales = useRef(new Map())
   const searchGlowScales = useRef(new Map())
   const searchHighlightIdsRef = useRef([])
@@ -155,7 +162,7 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
   }, [])
 
   const canReorderNow = useCallback(() => (
-    reorderEnabledRef.current && USE_BLOCK_LAYOUT && Boolean(layoutDataRef.current) && Boolean(entranceRef.current?.finished)
+    reorderEnabledRef.current && (layoutModeRef.current === 'ascendance' || USE_BLOCK_LAYOUT) && Boolean(layoutDataRef.current) && Boolean(entranceRef.current?.finished)
   ), [])
 
   const worldX = useCallback((clientX) => {
@@ -189,7 +196,10 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
       unions: graphUnions,
       filiations: filiationsWithOrder(graphFiliations, graphUnions, group.source, order),
     }
-    const result = computeBlockLayout(graph)
+    // Le réordonnancement recalcule le placement du mode en cours (l'ascendance garde sa racine)
+    const result = layoutModeRef.current === 'ascendance'
+      ? computeAscendanceLayout(graph, ascendanceRootRef.current)
+      : computeBlockLayout(graph)
     const baseSource = base.children.find((n) => n.id === group.source)
     const source = result.children.find((n) => n.id === group.source)
     const shift = baseSource && source ? baseSource.x - source.x : 0
@@ -333,10 +343,11 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
   }, [canReorderNow, getSiblingGroups, swapLayout, layoutForOrder, commitOrder])
 
   const getSiblingPlace = useCallback((personId) => {
-    if (!USE_BLOCK_LAYOUT || !layoutDataRef.current) return null
+    if (layoutMode !== 'ascendance' && !USE_BLOCK_LAYOUT) return null
+    if (!layoutDataRef.current) return null
     const group = getSiblingGroups().get(`p-${personId}`)
     return group ? { index: group.ids.indexOf(`p-${personId}`), count: group.ids.length } : null
-  }, [getSiblingGroups])
+  }, [getSiblingGroups, layoutMode])
 
   // Échap annule le glisser en cours
   useEffect(() => {
@@ -428,10 +439,22 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
 
   // Layout
   useEffect(() => {
-    const result = USE_BLOCK_LAYOUT ? computeBlockLayout() : computeLayout()
+    // Mode Ascendance : sous-graphe construit autour de la personne racine (racine explicite,
+    // sinon personne de départ configurée, sinon sélection en cours, sinon personne la plus connectée)
+    const isAscendance = layoutMode === 'ascendance'
+    const result = isAscendance
+      ? computeAscendanceLayout(null, ascendanceRootId ?? focusPersonIdRef.current ?? selectedPersonIdRef.current ?? null)
+      : (USE_BLOCK_LAYOUT ? computeBlockLayout() : computeLayout())
+    ascendanceRootRef.current = result.ascendanceRootId ?? null
 
     const canvas = canvasRef.current
     if (!canvas) return
+    if (!result.children.length) {
+      layoutDataRef.current = result
+      needsRedrawRef.current = true
+      setLayoutReady(true)
+      return
+    }
     const cssW = canvas.clientWidth || window.innerWidth
     const cssH = canvas.clientHeight || window.innerHeight
 
@@ -457,7 +480,10 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
 
     // Grand arbre : vu en entier, les portraits deviennent des pastilles illisibles.
     // On ouvre sur la personne de départ, à une taille où l'on reconnaît les visages.
-    const focusId = focusPersonIdRef.current
+    // En mode Ascendance, la personne de départ est la racine de la vue (les ancêtres au-dessus).
+    const focusId = isAscendance && result.ascendanceRootId != null
+      ? result.ascendanceRootId
+      : focusPersonIdRef.current
     const personNodes = result.children.filter((n) => n._type === 'person')
     let focusNode = focusId != null
       ? personNodes.find((n) => String(n._data?.id) === String(focusId))
@@ -475,7 +501,8 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
     if (focusNode && fitScale < FOCUS_MIN_READABLE_SCALE) {
       scale = FOCUS_SCALE
       offsetX = cssW / 2 - (focusNode.x + focusNode.width / 2) * scale
-      offsetY = cssH * 0.42 - (focusNode.y + focusNode.height / 2) * scale
+      // En ascendance la racine est en bas de la vue : on la pose plus bas pour garder les ancêtres visibles
+      offsetY = cssH * (isAscendance ? 0.72 : 0.42) - (focusNode.y + focusNode.height / 2) * scale
     }
 
     const init = { x: offsetX, y: offsetY, scale }
@@ -558,12 +585,7 @@ const Galaxy = ({ onPersonSelect, onMediaSelect, selectedPersonId, searchHighlig
     layoutDataRef.current = result
     needsRedrawRef.current = true
     setLayoutReady(true)
-  }, [graphRevision])
-
-  // Sync selectedPersonId
-  useEffect(() => {
-    selectedPersonIdRef.current = selectedPersonId
-  }, [selectedPersonId])
+  }, [graphRevision, layoutMode, ascendanceRootId])
 
   // Sync searchHighlightIds
   useEffect(() => {
