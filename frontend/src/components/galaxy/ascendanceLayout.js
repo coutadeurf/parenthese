@@ -1,6 +1,6 @@
 import { persons as globalPersons, unions as globalUnions, filiations as globalFiliations } from '../../data/mockData'
 import { computeLayout, normalizeFiliationsForLayout, coupleBarMeta, componentOrderPerGen, chainGap } from './elkLayout'
-import { PERSON_H, RENVOI_MIN_DX } from './constants'
+import { PERSON_H, PERSON_W, UNION_W, UNKNOWN_W, COMPACT_JOIN_GAP, RENVOI_MIN_DX } from './constants'
 
 // ============================================================
 // Mode Ascendance
@@ -37,21 +37,35 @@ import { PERSON_H, RENVOI_MIN_DX } from './constants'
 //   5. Les chaînes de couples sont reconstruites sur ces générations,
 //      orientées (partenaire paternel à gauche de l'union source), puis
 //      placées en deux phases contraintes par les côtés :
-//      - Phase 1, cascade de la lignée : de la racine vers le haut,
-//        les chaînes sont groupées par côté, balayées indépendamment,
-//        puis écartées symétriquement d'au moins SIDES_GAP entre les
-//        branches paternelle et maternelle.
+//      - Phase 1, placement pedigree de la lignée : la largeur de chaque
+//        sous-arbre d'ancêtres est calculée bottom-up, puis les
+//        intervalles horizontaux sont attribués top-down depuis la
+//        racine en découpant l'intervalle de chaque personne entre ses
+//        parents. Chaque personne directe est ainsi centrée sous
+//        l'union de ses parents, le partenaire paternel à gauche et le
+//        partenaire maternel à droite : la séparation des branches est
+//        structurelle (une famille ne migre jamais vers l'autre branche),
+//        les couples s'étirent pour accueillir leurs propres parents et
+//        les liens de la lignée restent verticaux, quelle que soit la
+//        profondeur. Les conjoints de remariage (membres non-directs des
+//        chaînes de lignée) pendent à l'extérieur, à côté de leur
+//        partenaire direct.
 //      - Phase 2, branches collatérales : fratries et remariages sont
 //        ancrés sur la personne de la lignée (fratrie d'un ancêtre,
 //        selon son côté) ou sur la racine (fratrie de la racine, selon
 //        le displayOrder), ou centrés sous leur union (remariage), en
 //        restant dans leur branche.
-//   6. Les liens de la lignée directe sont toujours dessinés. Un
-//      renvoi n'est utilisé que pour une seconde revendication d'une
-//      chaîne parente éloignée (ancêtre commun à deux branches).
-//      Les liens secondaires sont marqués _secondary (pointillés au
-//      rendu), la racine reçoit _ascendanceRoot, et chaque personne
-//      reçoit _side ('paternal' | 'maternal' | null).
+//   6. Les liens de la lignée directe (enfant principal de chaque
+//      chaîne) sont toujours dessinés en traits pleins. Toute autre
+//      filiation dont l'extrémité est trop éloignée (ancêtre commun,
+//      remariage, branche collatérale rejetée au loin) devient un renvoi
+//      : un bouton compact créé par le layout (marquage _renvoi sur
+//      l'arête, pointant vers l'identifiant stable du nœud cible),
+//      rendu en pastille cliquable qui mène à la représentation
+//      existante de la personne. Les liens secondaires sont marqués
+//      _secondary (pointillés au rendu), la racine reçoit
+//      _ascendanceRoot, et chaque personne reçoit _side
+//      ('paternal' | 'maternal' | null).
 // ============================================================
 
 const NODE_SPACING = 30
@@ -891,107 +905,322 @@ export function computeAscendanceLayout(graphData = null, rootPersonId = null) {
 
   const pos = new Map()
 
-  // --- Phase 1 : cascade de la lignée, de la racine vers le haut ---
-  // Chaque chaîne de couple est centrée sur l'union source au-dessus de son
-  // enfant de la lignée directe. Les chaînes sont groupées par côté (côté de
-  // l'enfant principal : paternel / neutre / maternel), balayées
-  // indépendamment, puis les branches paternelle et maternelle sont écartées
-  // symétriquement d'au moins SIDES_GAP : une famille ne change jamais de
-  // branche au fil du placement.
-  const chainSideOf = (chain) => {
-    const trunk = trunkChildOf.get(chain)
-    if (!trunk) return null
-    return sideByPerson.get(String(byId.get(trunk.personNodeId)._data.id)) ?? null
+  // --- Phase 1 : placement pedigree de la lignée directe (intervalles, haut → bas) ---
+  // Chaque personne directe est centrée sous l'union de ses parents ; les deux
+  // parents sont placés de part et d'autre (partenaire paternel à gauche,
+  // maternel à droite), ce qui rend la séparation des branches structurelle :
+  // une famille ne peut pas migrer vers l'autre branche au fil des générations.
+  // La largeur de chaque sous-arbre d'ancêtres est calculée bottom-up (upOf),
+  // puis les intervalles horizontaux sont attribués top-down depuis la racine en
+  // découpant l'intervalle de chaque personne entre ses parents. Les couples
+  // s'étirent naturellement pour accueillir leurs propres parents : les liens
+  // de la lignée restent verticaux, quelle que soit la profondeur (pas de dérive
+  // exponentielle au-dessus du troisième niveau).
+  //
+  // Une personne n'a ses parents dans son intervalle que si elle est l'enfant
+  // principal (trunk) de la chaîne parente. Une seconde revendication (ancêtre
+  // commun à deux branches) n'est pas réintégrée dans l'intervalle : la personne
+  // est traitée comme un sommet de branche, et le lien éloigné devient un renvoi.
+
+  // Enfant principal (trunk) de chaque source parente, par union et non par
+  // chaîne : une chaîne peut contenir plusieurs unions de la lignée (ancêtre
+  // commun à deux branches), chacune avec son propre enfant principal. C'est le
+  // premier revendiqué dans l'ordre de parcours depuis la racine.
+  const trunkChildBySource = new Map()
+  for (const pid of view.directPersonOrder) {
+    const childNodeId = `p-${pid}`
+    for (const src of (parentSourcesByChild.get(childNodeId) || [])) {
+      if (!trunkChildBySource.has(src)) trunkChildBySource.set(src, childNodeId)
+    }
   }
-  const chainBounds = (chain) => {
-    let l = Infinity
-    let r = -Infinity
+  // Sources parentes principales (trunk) de chaque personne directe, dans l'ordre des arêtes.
+  const trunkSourcesByPerson = new Map()
+  for (const pid of view.directPersonIds) {
+    const personNodeId = `p-${pid}`
+    const sources = [...new Set(parentSourcesByChild.get(personNodeId) || [])]
+      .filter((src) => trunkChildBySource.get(src) === personNodeId)
+    if (sources.length > 0) trunkSourcesByPerson.set(personNodeId, sources)
+  }
+
+  // Groupe de parents d'une source parente : couple (deux partenaires connus,
+  // ordonnés gauche/droite) ou parent unique (vu, avec son « Inconnu » embarqué).
+  const groupOfSource = (sourceId) => {
+    if (sourceId.startsWith('vu-')) {
+      const pid = sourceId.slice(3)
+      return { kind: 'single', parent: `p-${pid}`, unknown: `unknown-${pid}`, unionNodeId: sourceId }
+    }
+    const union = unionById.get(sourceId.slice(2))
+    if (!union) return null
+    const p1 = `p-${union.partner1Id}`
+    const p2 = `p-${union.partner2Id}`
+    const left = partnerLeftOf(sourceId)
+    if (!left) return null
+    return { kind: 'couple', left, right: left === p1 ? p2 : p1, unionNodeId: sourceId }
+  }
+
+  // Conjoints de remariage des membres de la lignée (unions non-trunk des
+  // chaînes de lignée dont un partenaire est une personne directe). Chaque
+  // conjoint est placé à côté de son partenaire direct, toujours du même côté :
+  // le côté opposé au conjoint de lignée (l'autre membre de l'union source, ou
+  // l'« Inconnu » embarqué d'un parent unique). Ce côté est déterminé
+  // structurellement ici, et la phase 1 réserve sa largeur dans les intervalles
+  // pour que les conjoints de remariage ne débordent ni ne chevauchent les
+  // familles voisines (ni ne migrent vers l'autre branche).
+  const remariageByDirect = new Map() // personNodeId → [{ otherKey, elkId }]
+  const remariageSideByPerson = new Map() // personNodeId → -1 (gauche) | 1 (droite)
+  {
+    const trunkUnionIds = new Set()
+    for (const sources of trunkSourcesByPerson.values()) {
+      for (const src of sources) trunkUnionIds.add(src)
+    }
+    for (const sources of trunkSourcesByPerson.values()) {
+      for (const src of sources) {
+        const g = groupOfSource(src)
+        if (!g) continue
+        if (g.kind === 'couple') {
+          if (!remariageSideByPerson.has(g.left)) remariageSideByPerson.set(g.left, -1)
+          if (!remariageSideByPerson.has(g.right)) remariageSideByPerson.set(g.right, 1)
+        } else {
+          const parentLeft = partnerLeftOf(g.unionNodeId) === g.parent
+          if (!remariageSideByPerson.has(g.parent)) {
+            remariageSideByPerson.set(g.parent, parentLeft ? -1 : 1)
+          }
+        }
+      }
+    }
+    for (const entry of coupleBarMeta) {
+      const ch = chainOf.get(entry.elkId)
+      if (!ch || !spineSet.has(ch)) continue
+      if (trunkUnionIds.has(entry.elkId)) continue // union source (trunk) : couple de lignée
+      const d1 = directElkIds.has(entry.p1Key)
+      const d2 = directElkIds.has(entry.p2Key)
+      const directKey = d1 ? entry.p1Key : (d2 ? entry.p2Key : null)
+      if (!directKey) continue
+      const otherKey = d1 ? entry.p2Key : entry.p1Key
+      if (!byId.has(otherKey)) continue
+      if (!remariageByDirect.has(directKey)) remariageByDirect.set(directKey, [])
+      remariageByDirect.get(directKey).push({ otherKey, elkId: entry.elkId })
+    }
+  }
+  // Largeur horizontale occupée par les conjoints de remariage d'une personne,
+  // union de remariage comprise (accolée au conjoint, côté intérieur)
+  const remWidthOf = (personNodeId) => {
+    let w = 0
+    for (const { otherKey } of (remariageByDirect.get(personNodeId) || [])) {
+      const node = byId.get(otherKey)
+      if (!node) continue
+      w += 2 * NODE_SPACING + UNION_W + (node._compact ? COMPACT_JOIN_GAP : NODE_SPACING) + node.width
+    }
+    return w
+  }
+
+  // Largeur réservée au « Inconnu » embarqué à côté d'un parent unique
+  const SINGLE_EXTRA = NODE_SPACING + UNION_W + NODE_SPACING + UNKNOWN_W
+
+  // Largeur du sous-arbre d'ancêtres d'une personne directe (bottom-up, borné sur les cycles)
+  const upMemo = new Map()
+  const upComputing = new Set()
+  function upOf(personNodeId) {
+    if (upMemo.has(personNodeId)) return upMemo.get(personNodeId)
+    if (upComputing.has(personNodeId)) return PERSON_W + FAMILY_GAP // cycle de données
+    upComputing.add(personNodeId)
+    const sources = trunkSourcesByPerson.get(personNodeId) || []
+    let w = PERSON_W + FAMILY_GAP
+    if (sources.length > 0) {
+      let sum = 0
+      let n = 0
+      for (const src of sources) {
+        const g = groupOfSource(src)
+        if (!g) continue
+        sum += groupWidthOf(g)
+        n++
+      }
+      if (n > 0) w = Math.max(PERSON_W + FAMILY_GAP, sum + (n - 1) * FAMILY_GAP)
+    }
+    upComputing.delete(personNodeId)
+    upMemo.set(personNodeId, w)
+    return w
+  }
+  function groupWidthOf(g) {
+    if (g.kind === 'couple') {
+      // Les conjoints de remariage de chaque partenaire sont réservés du côté
+      // opposé à l'autre membre du couple (left → gauche, right → droite)
+      return remWidthOf(g.left) + upOf(g.left) + FAMILY_GAP + upOf(g.right) + remWidthOf(g.right)
+    }
+    // Parent unique : les remariages du parent sont réservés du côté opposé à l'« Inconnu »
+    const parentLeft = partnerLeftOf(g.unionNodeId) === g.parent
+    return parentLeft
+      ? remWidthOf(g.parent) + upOf(g.parent) + SINGLE_EXTRA
+      : SINGLE_EXTRA + upOf(g.parent) + remWidthOf(g.parent)
+  }
+
+  // Attribution des intervalles top-down depuis la racine ; retourne le cx de la personne.
+  const cxByPerson = new Map() // personNodeId (directe) → cx
+  const unionCxByNode = new Map() // union/vu nodeId → cx
+  const unknownCxByNode = new Map() // unknown nodeId → cx
+  const placing = new Set()
+  function placePerson(personNodeId, a) {
+    if (cxByPerson.has(personNodeId)) return cxByPerson.get(personNodeId)
+    const w = upOf(personNodeId)
+    const sources = trunkSourcesByPerson.get(personNodeId) || []
+    if (placing.has(personNodeId) || sources.length === 0) {
+      // Sommet de branche (ancêtre sans parents connus) ou cycle : centré dans l'intervalle
+      const cx0 = a + w / 2
+      cxByPerson.set(personNodeId, cx0)
+      return cx0
+    }
+    placing.add(personNodeId)
+    // Découpe l'intervalle entre les groupes de parents (un par source principale)
+    const groups = []
+    let cursor = a
+    for (const src of sources) {
+      const g = groupOfSource(src)
+      if (!g) continue
+      groups.push({ g, a: cursor })
+      cursor += groupWidthOf(g) + FAMILY_GAP
+    }
+    let trunkCx = null
+    for (let i = 0; i < groups.length; i++) {
+      const { g, a: ga } = groups[i]
+      let unionCx
+      if (g.kind === 'couple') {
+        const lw = upOf(g.left)
+        // Chaque partenaire est décalé pour laisser, de son côté extérieur, la
+        // largeur réservée à ses conjoints de remariage
+        const cxL = placePerson(g.left, ga + remWidthOf(g.left))
+        const cxR = placePerson(g.right, ga + remWidthOf(g.left) + lw + FAMILY_GAP)
+        unionCx = (cxL + cxR) / 2
+      } else {
+        // Parent unique : le parent à une extrémité, l'« Inconnu » embarqué de l'autre
+        const parentLeft = partnerLeftOf(g.unionNodeId) === g.parent
+        const cxParent = placePerson(g.parent, parentLeft ? ga + remWidthOf(g.parent) : ga + SINGLE_EXTRA)
+        const sign = parentLeft ? 1 : -1
+        unionCx = cxParent + sign * (PERSON_W / 2 + NODE_SPACING + UNION_W / 2)
+        unknownCxByNode.set(
+          g.unknown,
+          cxParent + sign * (PERSON_W / 2 + NODE_SPACING + UNION_W + NODE_SPACING + UNKNOWN_W / 2),
+        )
+      }
+      unionCxByNode.set(g.unionNodeId, unionCx)
+      if (i === 0) trunkCx = unionCx
+    }
+    placing.delete(personNodeId)
+    cxByPerson.set(personNodeId, trunkCx)
+    return trunkCx
+  }
+  placePerson(`p-${view.rootPersonId}`, 0)
+
+  // --- Membres non-directs des chaînes de lignée : conjoints de remariage et
+  // --- conjoints compacts, placés à l'extérieur à côté de leur partenaire direct.
+  const placedCx = new Map()
+  for (const [nodeId, cx0] of cxByPerson) placedCx.set(nodeId, cx0)
+  for (const [nodeId, cx0] of unknownCxByNode) placedCx.set(nodeId, cx0)
+  {
+    // Occupation horizontale par génération (personnes + inconnus), pour éviter les chevauchements
+    const occGen = new Map()
+    const occAdd = (nodeId, cx0) => {
+      const n = byId.get(nodeId)
+      if (!n) return
+      if (!occGen.has(n._generation)) occGen.set(n._generation, [])
+      occGen.get(n._generation).push([cx0 - n.width / 2, cx0 + n.width / 2, nodeId])
+    }
+    const occFits = (nodeId, cx0) => {
+      const n = byId.get(nodeId)
+      if (!n) return true
+      const x0 = cx0 - n.width / 2
+      const x1 = cx0 + n.width / 2
+      for (const [s, e, otherId] of (occGen.get(n._generation) || [])) {
+        if (otherId === nodeId) continue
+        // Les conjoints isolés _compact se collent volontairement à leur
+        // partenaire : leur chevauchement n'est pas à éviter
+        if (n._compact || byId.get(otherId)?._compact) continue
+        if (x0 < e + NODE_SPACING && x1 > s - NODE_SPACING) return false
+      }
+      return true
+    }
+    for (const [nodeId, cx0] of placedCx) occAdd(nodeId, cx0)
+
+    const spineUnionEntries = coupleBarMeta.filter((entry) => {
+      const ch = chainOf.get(entry.elkId)
+      return ch && spineSet.has(ch)
+    })
+    // Conjoints de remariage à placer, groupés par partenaire direct
+    const byDirect = new Map()
+    for (const entry of spineUnionEntries) {
+      if (unionCxByNode.has(entry.elkId)) continue // union source (trunk) déjà placée
+      const d1 = directElkIds.has(entry.p1Key)
+      const d2 = directElkIds.has(entry.p2Key)
+      const directKey = d1 ? entry.p1Key : (d2 ? entry.p2Key : null)
+      const otherKey = d1 ? entry.p2Key : entry.p1Key
+      if (!directKey || !byId.has(otherKey)) continue
+      if (!byDirect.has(directKey)) byDirect.set(directKey, [])
+      byDirect.get(directKey).push({ entry, otherKey })
+    }
+    for (const [directKey, list] of byDirect) {
+      const cxD = placedCx.get(directKey)
+      if (cxD === undefined) continue
+      // Partenaires déjà placés de cette personne (conjoint de lignée, « Inconnu »)
+      const placedPartners = []
+      for (const entry of spineUnionEntries) {
+        if (entry.p1Key === directKey && placedCx.has(entry.p2Key)) placedPartners.push(placedCx.get(entry.p2Key))
+        else if (entry.p2Key === directKey && placedCx.has(entry.p1Key)) placedPartners.push(placedCx.get(entry.p1Key))
+      }
+      // Côté extérieur : opposé au conjoint de lignée, déterminé structurellement
+      // (identique à la réservation de largeur de la phase 1) ; repli sur le
+      // barycentre des partenaires déjà placés si le côté n'est pas connu
+      const side = remariageSideByPerson.get(directKey)
+        ?? (placedPartners.length > 0
+          ? (placedPartners.reduce((s, x) => s + x, 0) / placedPartners.length < cxD ? 1 : -1)
+          : 1)
+      const chain = chainOf.get(list[0].entry.elkId) || []
+      list.sort((a, b) => chain.indexOf(a.entry.elkId) - chain.indexOf(b.entry.elkId))
+      let edge = cxD + side * (byId.get(directKey).width / 2)
+      for (const { entry, otherKey } of list) {
+        if (placedCx.has(otherKey)) continue
+        const node = byId.get(otherKey)
+        const gap = node._compact ? COMPACT_JOIN_GAP : NODE_SPACING
+        // L'union de remariage est accolée au conjoint, côté intérieur (vers le
+        // partenaire direct) : avec plusieurs remariages empilés, le centre de
+        // l'union n'atterrit pas sur un autre conjoint.
+        let unionCx = edge + side * (NODE_SPACING + UNION_W / 2)
+        let spouseCx = unionCx + side * (UNION_W / 2 + NODE_SPACING + gap + node.width / 2)
+        // Évite les chevauchements avec les nœuds déjà placés à cette génération
+        let guard = 0
+        while ((!occFits(otherKey, spouseCx) || !occFits(entry.elkId, unionCx)) && guard < 1000) {
+          const shift = side * (node.width + NODE_SPACING)
+          unionCx += shift
+          spouseCx += shift
+          guard++
+        }
+        placedCx.set(otherKey, spouseCx)
+        occAdd(otherKey, spouseCx)
+        occAdd(entry.elkId, unionCx)
+        unionCxByNode.set(entry.elkId, unionCx)
+        edge = spouseCx + side * (node.width / 2)
+      }
+    }
+  }
+
+  // --- Écriture des positions de l'épine dans pos ---
+  for (const [nodeId, cx0] of placedCx) {
+    const n = byId.get(nodeId)
+    if (n) pos.set(nodeId, cx0 - n.width / 2)
+  }
+  for (const [nodeId, cx0] of unionCxByNode) {
+    const n = byId.get(nodeId)
+    if (n) pos.set(nodeId, cx0 - n.width / 2)
+  }
+  // Sécurité : un nœud de lignée sans position (données incohérentes) reçoit un
+  // emplacement de repli en bout de ligne ; le renvoi prendra le relais si besoin.
+  for (const chain of spineChains) {
+    if (chain.every((id) => pos.has(id))) continue
+    let x = 0
+    for (const n of nodes) if (pos.has(n.id)) x = Math.max(x, pos.get(n.id) + n.width)
     for (const id of chain) {
-      l = Math.min(l, pos.get(id))
-      r = Math.max(r, pos.get(id) + byId.get(id).width)
-    }
-    return [l, r]
-  }
-  const placeChainLR = (orderedChains, preferred) => {
-    let cursor = -Infinity
-    for (const chain of orderedChains) {
-      const left = Math.max(preferred.get(chain), cursor)
-      const offsets = chainOffsets(chain)
-      for (const id of chain) pos.set(id, left + offsets.get(id))
-      cursor = left + chainWidth(chain) + FAMILY_GAP
-    }
-  }
-  const spineOverlapAtGen = (genChains) => {
-    const boxes = genChains.map(chainBounds)
-    for (let i = 0; i < boxes.length; i++) {
-      for (let j = i + 1; j < boxes.length; j++) {
-        if (boxes[i][0] < boxes[j][1] + FAMILY_GAP && boxes[j][0] < boxes[i][1] + FAMILY_GAP) return true
-      }
-    }
-    return false
-  }
-  const spineGens = [...new Set(spineChains.map((c) => byId.get(c[0])._generation))].sort((a, b) => b - a)
-  for (const g of spineGens) {
-    const genChains = spineChains.filter((c) => byId.get(c[0])._generation === g)
-    const preferred = new Map()
-    for (const chain of genChains) {
-      const trunk = trunkChildOf.get(chain)
-      if (!trunk) { preferred.set(chain, 0); continue }
-      const childNode = byId.get(trunk.personNodeId)
-      const srcNode = byId.get(trunk.sourceUnionId)
-      const offsets = chainOffsets(chain)
-      preferred.set(
-        chain,
-        pos.get(trunk.personNodeId) + childNode.width / 2 - (offsets.get(trunk.sourceUnionId) + srcNode.width / 2),
-      )
-    }
-    const groups = { paternal: [], neutral: [], maternal: [] }
-    for (const chain of genChains) {
-      groups[chainSideOf(chain) ?? 'neutral'].push(chain)
-    }
-    for (const key of ['paternal', 'neutral', 'maternal']) {
-      groups[key].sort((a, b) => (preferred.get(a) - preferred.get(b)) || String(a[0]).localeCompare(String(b[0])))
-    }
-    // Balayage LR indépendant par groupe
-    for (const key of ['paternal', 'neutral', 'maternal']) {
-      placeChainLR(groups[key], preferred)
-    }
-    // Séparation structurelle symétrique entre les branches paternelle et maternelle
-    if (groups.paternal.length > 0 && groups.maternal.length > 0) {
-      const pRight = Math.max(...groups.paternal.map((c) => chainBounds(c)[1]))
-      const mLeft = Math.min(...groups.maternal.map((c) => chainBounds(c)[0]))
-      const deficit = pRight + SIDES_GAP - mLeft
-      if (deficit > 0) {
-        const saved = new Map()
-        for (const chain of genChains) for (const id of chain) saved.set(id, pos.get(id))
-        let shiftP = -deficit / 2
-        let shiftM = deficit / 2
-        // Garde-fou : ne pas pousser une branche dans une chaîne neutre
-        const pLeft = Math.min(...groups.paternal.map((c) => chainBounds(c)[0]))
-        const mRight = Math.max(...groups.maternal.map((c) => chainBounds(c)[1]))
-        for (const c of groups.neutral) {
-          const [l, r] = chainBounds(c)
-          if (r + FAMILY_GAP <= pLeft) shiftP = Math.max(shiftP, r + FAMILY_GAP - pLeft)
-          if (l - FAMILY_GAP >= mRight) shiftM = Math.min(shiftM, l - FAMILY_GAP - mRight)
-        }
-        const shift = (chainsToShift, dx) => {
-          for (const c of chainsToShift) for (const id of c) pos.set(id, pos.get(id) + dx)
-        }
-        shift(groups.paternal, shiftP)
-        shift(groups.maternal, shiftM)
-        // Repli : si le décalage crée une superposition, balayage LR global
-        // ordonné par côté (paternel, neutre, maternel) — toujours sans chevauchement
-        if (spineOverlapAtGen(genChains)) {
-          for (const [id, x] of saved) pos.set(id, x)
-          const rank = { paternal: 0, neutral: 1, maternal: 2 }
-          const ordered = [...genChains].sort((a, b) => {
-            const d = rank[chainSideOf(a) ?? 'neutral'] - rank[chainSideOf(b) ?? 'neutral']
-            if (d !== 0) return d
-            return (preferred.get(a) - preferred.get(b)) || String(a[0]).localeCompare(String(b[0]))
-          })
-          placeChainLR(ordered, preferred)
-        }
-      }
+      if (pos.has(id)) continue
+      const n = byId.get(id)
+      pos.set(id, x)
+      x += n.width + FAMILY_GAP
     }
   }
 
@@ -1290,22 +1519,30 @@ export function computeAscendanceLayout(graphData = null, rootPersonId = null) {
   if (!Number.isFinite(minX)) minX = 0
   for (const n of nodes) n.x = (pos.get(n.id) ?? 0) - minX
 
-  // --- Renvois : seconde revendication d'une chaîne parente, trop éloignée ---
-  // Le lien vers l'enfant principal de la chaîne (l'axe) est toujours dessiné ;
-  // les arêtes collatérales le sont aussi. Seule une autre personne de la
-  // lignée rattachée à la même chaîne, placée trop loin, part en renvoi.
+  // --- Renvois : filiation dont l'extrémité est trop éloignée ---
+  // Après la phase 1, les liens de la lignée directe (l'enfant principal de
+  // chaque chaîne parente) sont verticaux : ils restent en traits pleins à
+  // toute profondeur. Toute autre filiation (ancêtre commun revendiqué par
+  // deux branches, remariage, branche collatérale rejetée au loin) dont les
+  // extrémités sont trop éloignées horizontalement devient un renvoi : le
+  // layout marque l'arête (_renvoi + identifiant stable de la cible) et le
+  // renderer affiche une pastille cliquable menant à la représentation
+  // existante de la personne — sans dupliquer le nœud ni tracer de longue
+  // arête à travers l'arbre.
   const centerX = (id) => byId.get(id).x + byId.get(id).width / 2
   const renvoisByUnion = new Map()
   for (const e of edges) {
+    const src = e.sources[0]
     const target = e.targets[0]
-    if (!directElkIds.has(target)) continue
-    const srcChain = chainOf.get(e.sources[0])
-    const trunk = srcChain ? trunkChildOf.get(srcChain) : null
-    if (!trunk || trunk.personNodeId === target) continue
-    if (Math.abs(centerX(e.sources[0]) - centerX(target)) <= RENVOI_MIN_DX) continue
+    if (!byId.has(src) || !byId.has(target)) continue
+    // La lignée directe (l'enfant principal de l'union source) reste toujours
+    // reliée directement à son union
+    if (trunkChildBySource.get(src) === target) continue
+    if (Math.abs(centerX(src) - centerX(target)) <= RENVOI_MIN_DX) continue
     e._renvoi = true
-    e._renvoiIndex = renvoisByUnion.get(e.sources[0]) || 0
-    renvoisByUnion.set(e.sources[0], e._renvoiIndex + 1)
+    e._renvoiIndex = renvoisByUnion.get(src) || 0
+    renvoisByUnion.set(src, e._renvoiIndex + 1)
+    e._renvoiTargetId = target
   }
 
   return { children: nodes, edges, ascendanceRootId: view.rootPersonId }

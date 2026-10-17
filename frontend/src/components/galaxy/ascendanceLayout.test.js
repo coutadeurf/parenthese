@@ -97,6 +97,66 @@ const expectEdgesMatchData = (layout, graph, rootId) => {
   expect([...actual].sort(), 'arêtes en trop (relations inventées)').toEqual([...expected].sort())
 }
 
+// Enfant principal (trunk) de chaque source parente, reconstruit depuis les
+// données comme le fait le layout : premier revendiqué dans l'ordre de parcours
+// depuis la racine. Sert à vérifier les invariants des liens de lignée.
+const trunkInfoOf = (graph, rootId) => {
+  const view = buildAscendanceView(graph, rootId)
+  const sourcesByPerson = new Map()
+  for (const f of normalizeFiliationsForLayout(view.filiations, view.unions)) {
+    const src = f.unionId ? `u-${f.unionId}` : `vu-${f.parentId}`
+    const child = `p-${f.childId}`
+    if (!sourcesByPerson.has(child)) sourcesByPerson.set(child, [])
+    sourcesByPerson.get(child).push(src)
+  }
+  const trunkBySource = new Map()
+  for (const pid of view.directPersonOrder) {
+    for (const src of (sourcesByPerson.get(`p-${pid}`) || [])) {
+      if (!trunkBySource.has(src)) trunkBySource.set(src, `p-${pid}`)
+    }
+  }
+  // Première source trunk de chaque personne : celle sous laquelle elle est centrée
+  const firstTrunkSourceByPerson = new Map()
+  for (const [personNodeId, sources] of sourcesByPerson) {
+    const trunkSources = [...new Set(sources)].filter((src) => trunkBySource.get(src) === personNodeId)
+    if (trunkSources.length > 0) firstTrunkSourceByPerson.set(personNodeId, trunkSources[0])
+  }
+  return { trunkBySource, firstTrunkSourceByPerson }
+}
+
+// Invariants des liens de la lignée directe (enfant principal de l'union
+// source) : jamais un renvoi, et vertical (dx = 0) vers la première union
+// parente (la personne est centrée sous son union).
+const expectTrunkEdgesDirectAndVertical = (layout, graph, rootId) => {
+  const map = byId(layout)
+  const { trunkBySource, firstTrunkSourceByPerson } = trunkInfoOf(graph, rootId)
+  for (const e of layout.edges) {
+    if (trunkBySource.get(e.sources[0]) !== e.targets[0]) continue
+    expect(e._renvoi, `lien de lignée en renvoi : ${e.sources[0]}>${e.targets[0]}`).toBeUndefined()
+    if (firstTrunkSourceByPerson.get(e.targets[0]) === e.sources[0]) {
+      const dx = Math.abs(cx(map.get(e.sources[0])) - cx(map.get(e.targets[0])))
+      expect(dx, `lien de lignée non vertical : ${e.sources[0]}>${e.targets[0]}`).toBe(0)
+    }
+  }
+}
+
+// Invariant des liens secondaires : hors lignée directe, aucun lien ne dépasse
+// le seuil de renvoi sans être marqué ; un renvoi pointe vers un nœud existant.
+const expectNoLongEdgeWithoutRenvoi = (layout, graph, rootId) => {
+  const map = byId(layout)
+  const { trunkBySource } = trunkInfoOf(graph, rootId)
+  for (const e of layout.edges) {
+    if (e._renvoi) {
+      expect(e._renvoiTargetId).toBe(e.targets[0])
+      expect(map.has(e.targets[0]), 'cible du renvoi absente du graphe').toBe(true)
+      continue
+    }
+    if (trunkBySource.get(e.sources[0]) === e.targets[0]) continue
+    const dx = Math.abs(cx(map.get(e.sources[0])) - cx(map.get(e.targets[0])))
+    expect(dx, `lien secondaire trop long sans renvoi : ${e.sources[0]}>${e.targets[0]}`).toBeLessThanOrEqual(RENVOI_MIN_DX)
+  }
+}
+
 // ============================================================
 // 1. Racine sans parent connu
 // ============================================================
@@ -262,12 +322,12 @@ describe('computeAscendanceLayout — plusieurs générations', () => {
       expect(map.get(gp)._generation).toBe(map.get('p-m')._generation - 1)
       expect(map.get('p-m').y - map.get(gp).y).toBe(GEN_HEIGHT)
     }
-    // Les deux branches sont écartées symétriquement : le décalage de l’union
-    // paternelle par rapport à p égale celui de l’union maternelle par rapport à m
+    // Chaque parent est centré exactement sous l'union de ses propres parents :
+    // le lien de filiation de la lignée est vertical, sans décalage artificiel
     const offP = Math.abs(cx(map.get('u-u0')) - cx(map.get('p-p')))
     const offM = Math.abs(cx(map.get('u-u2')) - cx(map.get('p-m')))
-    expect(offP).toBeGreaterThan(0)
-    expect(offP).toBe(offM)
+    expect(offP).toBe(0)
+    expect(offM).toBe(0)
     // La branche maternelle est à droite de la branche paternelle, écart ≥ SIDES_GAP
     expect(map.get('u-u2').x).toBeGreaterThan(map.get('p-g2').x + map.get('p-g2').width)
     expect(map.get('p-g3').x - (map.get('p-g2').x + map.get('p-g2').width)).toBeGreaterThanOrEqual(SIDES_GAP)
@@ -733,6 +793,10 @@ describe('computeAscendanceLayout — grand graphe', () => {
       const dy = map.get(e.targets[0]).y - map.get(e.sources[0]).y
       expect(dy, `l’arête ${e.id} ne respecte pas les générations`).toBeGreaterThanOrEqual(GEN_HEIGHT)
     }
+    // Les liens de la lignée restent verticaux et directs, même à grande échelle
+    expectTrunkEdgesDirectAndVertical(layout, graph, 'r')
+    // Aucun lien secondaire trop long ne reste sans renvoi
+    expectNoLongEdgeWithoutRenvoi(layout, graph, 'r')
   }, 20000)
 
   it('reste déterministe sur un grand graphe', () => {
@@ -1358,5 +1422,215 @@ describe('computeAscendanceLayout — séparation des branches avec sexes', () =
     // Grands-parents maternels : gmf à gauche de u2, gmm2 à droite
     expect(map.get('p-gmf').x + map.get('p-gmf').width).toBeLessThanOrEqual(map.get('u-u2').x)
     expect(map.get('p-gmm2').x).toBeGreaterThanOrEqual(map.get('u-u2').x + map.get('u-u2').width)
+  })
+})
+
+// ============================================================
+// Régressions — placement pedigree profond, renvois, stabilité
+// ============================================================
+describe('computeAscendanceLayout — régressions placement profond', () => {
+  // Arbre binaire complet de `depth` générations d'ancêtres (deux parents
+  // connus à chaque niveau, aucune fratrie ni remariage)
+  const buildBinaryTree = (depth) => {
+    const persons = [person('r')]
+    const unions = []
+    const filiations = []
+    let egos = ['r']
+    for (let gen = 1; gen <= depth; gen++) {
+      const next = []
+      for (const childId of egos) {
+        const fId = `a${gen}f-${childId}`
+        const mId = `a${gen}m-${childId}`
+        const uId = `u${gen}-${childId}`
+        persons.push(person(fId), person(mId))
+        unions.push(union(uId, fId, mId))
+        filiations.push(fil(`f-${gen}-${childId}`, childId, uId))
+        next.push(fId, mId)
+      }
+      egos = next
+    }
+    return { persons, unions, filiations }
+  }
+
+  it('sépare les branches sur 6 générations, liens de lignée verticaux, aucun renvoi', () => {
+    const graph = buildBinaryTree(6)
+    const layout = computeAscendanceLayout(graph, 'r')
+    expectUniquePersons(layout)
+    expectSideSeparation(layout)
+    // Pas de dérive horizontale au fil des générations : chaque personne est
+    // centrée sous l'union de ses parents, à toute profondeur
+    expectTrunkEdgesDirectAndVertical(layout, graph, 'r')
+    expectNoLongEdgeWithoutRenvoi(layout, graph, 'r')
+    // Arbre binaire pur : toutes les filiations sont de la lignée directe
+    expect(layout.edges.some((e) => e._renvoi)).toBe(false)
+    expect(layout.edges.some((e) => e._secondary)).toBe(false)
+    expectEdgesMatchData(layout, graph, 'r')
+    expectEdgesPointUp(layout)
+    expectNoOverlapWithinGenerations(layout)
+  })
+
+  it('conserve la séparation et la verticalité avec remariages et fratries profondes', () => {
+    const graph = buildBinaryTree(4)
+    // Remariage du père de la racine (a1f-r) : conjoint m2, enfant h
+    graph.persons.push(person('m2'), person('h'))
+    graph.unions.push(union('uR1', 'a1f-r', 'm2'))
+    graph.filiations.push(fil('fR1', 'h', 'uR1'))
+    // Fratrie de la mère de la racine (a1m-r) : frère s (mêmes parents u2-a1m-r),
+    // conjoint ss, enfant sc
+    graph.persons.push(person('s'), person('ss'), person('sc'))
+    graph.filiations.push(fil('fs', 's', 'u2-a1m-r', { displayOrder: 2 }))
+    graph.unions.push(union('us', 's', 'ss'))
+    graph.filiations.push(fil('fsc', 'sc', 'us'))
+    const layout = computeAscendanceLayout(graph, 'r')
+    const map = byId(layout)
+    expectUniquePersons(layout)
+    expectSideSeparation(layout)
+    expectTrunkEdgesDirectAndVertical(layout, graph, 'r')
+    expectNoLongEdgeWithoutRenvoi(layout, graph, 'r')
+    // Le conjoint de remariage et l'enfant de la fratrie suivent leur branche
+    expect(map.get('p-m2')._side).toBe('paternal')
+    expect(map.get('p-h')._side).toBe('paternal')
+    expect(map.get('p-s')._side).toBe('maternal')
+    expect(map.get('p-sc')._side).toBe('maternal')
+    // La fratrie est au même niveau que sa personne de lignée, pas au-dessus
+    expect(map.get('p-s')._generation).toBe(map.get('p-a1m-r')._generation)
+    expectEdgesMatchData(layout, graph, 'r')
+    expectEdgesPointUp(layout)
+    expectNoOverlapWithinGenerations(layout)
+  })
+
+  it('les trois premiers niveaux sont stables quand on ajoute des niveaux profonds', () => {
+    const base = {
+      persons: ['r', 'p', 'm'].map(person),
+      unions: [union('u1', 'p', 'm')],
+      filiations: [fil('f1', 'r', 'u1')],
+    }
+    const extended = {
+      persons: ['r', 'p', 'm', 's', 'g1', 'g2', 'ss', 'sc'].map(person),
+      unions: [union('u1', 'p', 'm'), union('u0', 'g1', 'g2'), union('us', 's', 'ss')],
+      filiations: [
+        fil('f1', 'r', 'u1'),
+        fil('fs', 's', 'u1', { displayOrder: 2 }),
+        fil('f0', 'p', 'u0'),
+        fil('fsc', 'sc', 'us'),
+      ],
+    }
+    const a = byId(computeAscendanceLayout(base, 'r'))
+    const b = byId(computeAscendanceLayout(extended, 'r'))
+    // Les écarts de génération (et donc de hauteur) sont identiques : la
+    // normalisation décale les valeurs absolues, pas la structure
+    expect(b.get('p-r').y - b.get('p-p').y).toBe(a.get('p-r').y - a.get('p-p').y)
+    expect(b.get('p-r').y - b.get('p-p').y).toBe(GEN_HEIGHT)
+    expect(b.get('p-r').y - b.get('p-m').y).toBe(GEN_HEIGHT)
+    // La racine reste centrée sous son union ; les parents encadrent le centre
+    expect(Math.abs(cx(b.get('u-u1')) - cx(b.get('p-r')))).toBeLessThan(1)
+    expect(b.get('p-p').x + b.get('p-p').width).toBeLessThanOrEqual(b.get('u-u1').x)
+    expect(b.get('p-m').x).toBeGreaterThanOrEqual(b.get('u-u1').x + b.get('u-u1').width)
+    // La sœur est sur la même génération que la racine ; personne ne remonte
+    expect(b.get('p-s')._generation).toBe(b.get('p-r')._generation)
+    expect(b.get('p-p')._generation).toBe(b.get('p-r')._generation - 1)
+    expect(b.get('p-m')._generation).toBe(b.get('p-r')._generation - 1)
+    // Le grand-parent remonte d'exactement une génération au-dessus de p
+    expect(b.get('p-g1')._generation).toBe(b.get('p-p')._generation - 1)
+    expect(b.get('p-g1').y).toBe(b.get('p-p').y - GEN_HEIGHT)
+    expectTrunkEdgesDirectAndVertical(computeAscendanceLayout(extended, 'r'), extended, 'r')
+    expectSideSeparation(computeAscendanceLayout(extended, 'r'))
+  })
+
+  it('un ancêtre commun éloigné produit un renvoi fonctionnel, sans dupliquer la personne', () => {
+    // gg1/gg2 sont parents de g1 (paternel) et de g3 (maternel) ; les remariages
+    // de g2 et g4 écartent les deux branches
+    const graph = {
+      persons: ['r', 'p', 'm', 'g1', 'g2', 'g3', 'g4', 'gg1', 'gg2', 's2', 's4'].map(person),
+      unions: [
+        union('u1', 'p', 'm'),
+        union('u0', 'g1', 'g2'),
+        union('u2', 'g3', 'g4'),
+        union('u00', 'gg1', 'gg2'),
+        union('uR1', 'g2', 's2'),
+        union('uR2', 'g4', 's4'),
+      ],
+      filiations: [
+        fil('f1', 'r', 'u1'),
+        fil('f0', 'p', 'u0'),
+        fil('f2', 'm', 'u2'),
+        fil('f3', 'g1', 'u00'),
+        fil('f4', 'g3', 'u00'),
+      ],
+    }
+    const layout = computeAscendanceLayout(graph, 'r')
+    const map = byId(layout)
+    expectUniquePersons(layout)
+    // La seconde revendication (g3), trop éloignée, est un renvoi vers l'unique
+    // représentation de g3 ; le renvoi porte l'identifiant stable de la cible
+    const eG3 = edgeBetween(layout, 'u-u00', 'p-g3')
+    expect(eG3._renvoi).toBe(true)
+    expect(eG3._renvoiTargetId).toBe('p-g3')
+    expect(map.has('p-g3')).toBe(true)
+    // La première revendication (g1) reste un lien direct, vertical
+    const eG1 = edgeBetween(layout, 'u-u00', 'p-g1')
+    expect(eG1._renvoi).toBeUndefined()
+    expect(Math.abs(cx(map.get('u-u00')) - cx(map.get('p-g1')))).toBe(0)
+    // Les ancêtres partagés ne sont pas dupliqués et restent à leur génération
+    expect(map.get('p-gg1')._shared).toBe(true)
+    expect(map.get('p-gg1')._generation).toBe(map.get('p-g1')._generation - 1)
+    expectSideSeparation(layout)
+    expectTrunkEdgesDirectAndVertical(layout, graph, 'r')
+    expectNoLongEdgeWithoutRenvoi(layout, graph, 'r')
+    expectEdgesMatchData(layout, graph, 'r')
+    expectNoOverlapWithinGenerations(layout)
+  })
+
+  it('sépare les enfants de différentes unions en familles distinctes', () => {
+    // p a deux unions : u1 (m, enfants r et s) et u2 (m2, enfant h)
+    const graph = {
+      persons: ['r', 'p', 'm', 's', 'm2', 'h'].map(person),
+      unions: [union('u1', 'p', 'm'), union('u2', 'p', 'm2')],
+      filiations: [
+        fil('f1', 'r', 'u1'),
+        fil('fs', 's', 'u1', { displayOrder: 2 }),
+        fil('fh', 'h', 'u2'),
+      ],
+    }
+    const layout = computeAscendanceLayout(graph, 'r')
+    const map = byId(layout)
+    expectUniquePersons(layout)
+    // r et s (même union) sont groupés ; h (autre union) est à part, rattaché à u2
+    expect(map.get('p-s')._generation).toBe(map.get('p-r')._generation)
+    expect(map.get('p-h')._generation).toBe(map.get('p-r')._generation)
+    expect(edgeBetween(layout, 'u-u1', 'p-s')).toBeDefined()
+    expect(edgeBetween(layout, 'u-u2', 'p-h')).toBeDefined()
+    expect(edgeBetween(layout, 'u-u2', 'p-h')._secondary).toBe(true)
+    // h est centré sous u2 ; la fratrie r/s reste sous u1, sans mélange
+    expect(Math.abs(cx(map.get('p-h')) - cx(map.get('u-u2')))).toBeLessThan(1)
+    const siblings = ['p-r', 'p-s'].map((id) => map.get(id).x).sort((x, y) => x - y)
+    expect(siblings[1]).toBeGreaterThanOrEqual(siblings[0])
+    expect(map.get('u-u2')._generation).toBe(map.get('p-r')._generation - 1)
+    expectSideSeparation(layout)
+    expectTrunkEdgesDirectAndVertical(layout, graph, 'r')
+    expectNoLongEdgeWithoutRenvoi(layout, graph, 'r')
+    expectEdgesMatchData(layout, graph, 'r')
+    expectNoOverlapWithinGenerations(layout)
+  })
+
+  it('les demi-frères et demi-sœurs restent dans la branche de leur parent, sans lien long', () => {
+    // r a pour parents p et m (u1) ; p se remarie (u2, enfant h) ; m se remarie (u3, h2)
+    const graph = {
+      persons: ['r', 'p', 'm', 'm2', 'h', 'p2', 'h2'].map(person),
+      unions: [union('u1', 'p', 'm'), union('u2', 'p', 'm2'), union('u3', 'm', 'p2')],
+      filiations: [fil('f1', 'r', 'u1'), fil('fh', 'h', 'u2'), fil('fh2', 'h2', 'u3')],
+    }
+    const layout = computeAscendanceLayout(graph, 'r')
+    const map = byId(layout)
+    expectUniquePersons(layout)
+    expect(map.get('p-h')._generation).toBe(map.get('p-r')._generation)
+    expect(map.get('p-h2')._generation).toBe(map.get('p-r')._generation)
+    expect(map.get('p-h')._side).toBe('paternal')
+    expect(map.get('p-h2')._side).toBe('maternal')
+    expectSideSeparation(layout)
+    expectTrunkEdgesDirectAndVertical(layout, graph, 'r')
+    expectNoLongEdgeWithoutRenvoi(layout, graph, 'r')
+    expectEdgesMatchData(layout, graph, 'r')
+    expectNoOverlapWithinGenerations(layout)
   })
 })
